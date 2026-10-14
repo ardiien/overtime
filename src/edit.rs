@@ -5,7 +5,7 @@
  */
 
 use crate::store::{format_duration, Store};
-use crate::util::{parse_date, parse_time};
+use crate::util::{format_hhmm, parse_date, parse_target, parse_time};
 use anyhow::{bail, Context};
 use chrono::{Local, NaiveDate, NaiveTime, TimeZone};
 use clap::{Args, Subcommand};
@@ -29,6 +29,9 @@ enum Commands {
         /// New end time for the session (HH:MM or HH:MM:SS).
         #[arg(short, long, value_parser = parse_time)]
         end: Option<NaiveTime>,
+        /// New daily target for the session as HH:MM, e.g. --target 4:00.
+        #[arg(short, long, value_parser = parse_target)]
+        target: Option<i64>,
     },
     /// Edit a session's pause.
     Pause {
@@ -52,9 +55,12 @@ enum Commands {
 
 pub fn handle(args: &Edit) -> anyhow::Result<()> {
     match &args.command {
-        Commands::Record { date, start, end } => {
-            handle_record_cmd(date.clone(), start.clone(), end.clone())?
-        }
+        Commands::Record {
+            date,
+            start,
+            end,
+            target,
+        } => handle_record_cmd(date.clone(), start.clone(), end.clone(), *target)?,
         Commands::Pause {
             date,
             id,
@@ -77,6 +83,7 @@ fn handle_record_cmd(
     date: NaiveDate,
     start: Option<NaiveTime>,
     end: Option<NaiveTime>,
+    target: Option<i64>,
 ) -> anyhow::Result<()> {
     let mut store = Store::load()?;
 
@@ -93,8 +100,8 @@ fn handle_record_cmd(
     let session = &mut store.sessions[session_idx];
     let date = session.started_at.date_naive();
 
-    if start.is_none() && end.is_none() {
-        bail!("nothing to edit - provide --start or --end.");
+    if start.is_none() && end.is_none() && target.is_none() {
+        bail!("nothing to edit - provide --start, --end, or --target.");
     }
 
     let old_start = session.started_at;
@@ -132,6 +139,16 @@ fn handle_record_cmd(
         println!(
             "Updated record end {old_end_str} → {}",
             new_dt.format("%Y-%m-%d %H:%M:%S")
+        );
+    }
+
+    if let Some(new_target) = target {
+        let old_target = session.target_secs;
+        session.target_secs = new_target;
+        println!(
+            "Updated daily target {} → {}",
+            format_hhmm(old_target),
+            format_hhmm(new_target)
         );
     }
 

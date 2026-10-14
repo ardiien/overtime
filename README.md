@@ -68,6 +68,13 @@ Start a session at a specific time:
 zeit record start --at 09:00
 ```
 
+Start a session with a different daily target (`HH:MM`, default `8:00`):
+
+```bash
+zeit record start --target 4:00
+zeit record start --at 09:00 --target 6:30
+```
+
 ## End a session
 
 ```bash
@@ -187,8 +194,10 @@ Reports aggregate:
 
 * Worked time
 * Pause time
-* Overtime
+* Overtime (worked time minus each session's daily target)
 * Day totals
+
+The daily report (`--month M --day D`) also shows each session's target.
 
 ---
 
@@ -204,6 +213,12 @@ Edit session end:
 
 ```bash
 zeit edit record 2026-05-27 --end 17:45
+```
+
+Change the daily target of an existing session (`HH:MM`):
+
+```bash
+zeit edit record 2026-05-27 --target 4:00
 ```
 
 ## Edit a pause
@@ -243,5 +258,8 @@ No external services, no databases.
 
 # Overtime definition
 
-8 hours/day counts as a normal day. Every completed session is treated
-as one working day.
+Every completed session is treated as one working day. The daily target
+defaults to 8 hours and can be changed per session with `--target HH:MM`
+on `record start` or later with `edit record <date> --target HH:MM`.
+Overtime = worked time - that session's target. Sessions recorded before
+this feature existed keep the 8-hour default.

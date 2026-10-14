@@ -4,7 +4,7 @@
  * See http://www.apache.org/licenses/LICENSE-2.0
  */
 
-use crate::util::TOOL_NAME;
+use crate::util::{DEFAULT_TARGET_SECS, TOOL_NAME};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
@@ -46,15 +46,24 @@ pub struct Session {
     pub ended_at: Option<DateTime<Local>>,
     /// Zero or more pauses during this session.
     pub pauses: Vec<Pause>,
+    /// Daily target in seconds. Overtime = worked - target.
+    /// Sessions saved before this field existed deserialize as the 8h default.
+    #[serde(default = "default_target_secs")]
+    pub target_secs: i64,
+}
+
+fn default_target_secs() -> i64 {
+    DEFAULT_TARGET_SECS
 }
 
 impl Session {
-    pub fn new(started_at: DateTime<Local>) -> Self {
+    pub fn new(started_at: DateTime<Local>, target_secs: i64) -> Self {
         Self {
             id: started_at.timestamp(),
             started_at,
             ended_at: None,
             pauses: vec![],
+            target_secs,
         }
     }
 

@@ -5,10 +5,10 @@
  */
 
 use crate::store::{format_duration, Session, Store};
-use crate::util::NORMAL_WORK_SECS;
+use crate::util::format_hhmm;
 use anyhow::{bail, Result};
 use chrono::{Datelike, IsoWeek, Local};
-use clap::{arg, Args, Subcommand};
+use clap::{Args, Subcommand};
 use std::collections::BTreeMap;
 
 #[derive(Args)]
@@ -70,11 +70,13 @@ struct Bucket {
     days: u32,
     worked_secs: i64,
     pause_secs: i64,
+    /// Sum of each session's own daily target.
+    target_secs: i64,
 }
 
 impl Bucket {
     fn overtime_secs(&self) -> i64 {
-        self.worked_secs - (self.days as i64 * NORMAL_WORK_SECS)
+        self.worked_secs - self.target_secs
     }
 }
 
@@ -83,6 +85,7 @@ fn add_session(bucket: &mut Bucket, session: &Session) {
         bucket.days += 1;
         bucket.worked_secs += worked;
         bucket.pause_secs += session.total_pause_secs();
+        bucket.target_secs += session.target_secs;
     }
 }
 
@@ -207,12 +210,13 @@ fn handle_cmd(f: Filters) -> Result<()> {
                     .unwrap_or_else(|| "ongoing".to_string());
                 let worked = s.worked_secs().unwrap_or(0);
                 let pause = s.total_pause_secs();
-                let ot = worked - NORMAL_WORK_SECS;
+                let ot = worked - s.target_secs;
                 let sign = if ot >= 0 { "+" } else { "-" };
                 println!(
-                    "  {} → {}   worked {}   pauses {}   overtime {}{}",
+                    "  {} → {}   target {}   worked {}   pauses {}   overtime {}{}",
                     started,
                     ended,
+                    format_hhmm(s.target_secs),
                     format_duration(worked),
                     format_duration(pause),
                     sign,

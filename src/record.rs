@@ -10,7 +10,7 @@ use crate::util::TOOL_NAME;
 use anyhow::{bail, Context, Result};
 use chrono::{Local, NaiveTime, TimeZone};
 use clap::{Args, Subcommand};
-use util::{parse_time, NORMAL_WORK_SECS};
+use util::{parse_target, parse_time, DEFAULT_TARGET_SECS};
 
 #[derive(Args)]
 pub struct Record {
@@ -25,6 +25,9 @@ enum Commands {
         /// Record start as a specific past time today, e.g. --at 09:00.
         #[arg(long, value_parser = parse_time)]
         at: Option<chrono::NaiveTime>,
+        /// Daily target for this session as HH:MM, e.g. --target 4:00 (default 8:00).
+        #[arg(long, value_parser = parse_target)]
+        target: Option<i64>,
     },
     /// End the current work session.
     End {
@@ -36,14 +39,14 @@ enum Commands {
 
 pub fn handle(args: &Record) -> Result<()> {
     match &args.command {
-        Commands::Start { at } => handle_start_cmd(at.clone())?,
+        Commands::Start { at, target } => handle_start_cmd(at.clone(), *target)?,
         Commands::End { at } => handle_end_cmd(at.clone())?,
     }
 
     Ok(())
 }
 
-fn handle_start_cmd(at: Option<NaiveTime>) -> Result<()> {
+fn handle_start_cmd(at: Option<NaiveTime>, target: Option<i64>) -> Result<()> {
     let mut store = Store::load()?;
 
     if store.active_session_mut().is_some() {
@@ -73,7 +76,7 @@ fn handle_start_cmd(at: Option<NaiveTime>) -> Result<()> {
         started_at.format("%Y-%m-%d %H:%M:%S")
     );
 
-    let session = crate::store::Session::new(started_at);
+    let session = crate::store::Session::new(started_at, target.unwrap_or(DEFAULT_TARGET_SECS));
     store.sessions.push(session);
     store.save()?;
 
@@ -124,7 +127,7 @@ fn handle_end_cmd(at: Option<NaiveTime>) -> Result<()> {
 
     let worked = session.worked_secs().unwrap_or(0);
     let pause_secs = session.total_pause_secs();
-    let overtime = worked - NORMAL_WORK_SECS;
+    let overtime = worked - session.target_secs;
 
     let started_at = session.started_at;
     println!(
