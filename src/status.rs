@@ -4,7 +4,7 @@
  * See http://www.apache.org/licenses/LICENSE-2.0
  */
 
-use crate::store::{format_duration, Store};
+use crate::store::{Store, format_duration, format_target};
 use anyhow::Result;
 use chrono::Local;
 use clap::Args;
@@ -29,8 +29,9 @@ pub fn handle(_args: &Status) -> Result<()> {
     let worked = elapsed - pause_secs;
 
     println!(
-        "Started at {}",
-        session.started_at.format("%Y-%m-%d %H:%M:%S")
+        "Started at {} (Target: {})",
+        session.started_at.format("%Y-%m-%d %H:%M:%S"),
+        format_target(session.target_secs),
     );
     println!("Elapsed {}", format_duration(elapsed));
     println!("Pause(s) {}", format_duration(pause_secs));

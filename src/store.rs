@@ -148,6 +148,14 @@ pub fn format_duration(total_secs: i64) -> String {
     format!("{sign}{h}h {m:02}m {s:02}s")
 }
 
+/// Pretty-print a target duration given as total seconds.
+pub fn format_target(total_secs: i64) -> String {
+    let total_secs = total_secs.unsigned_abs();
+    let h = total_secs / 3600;
+    let m = (total_secs % 3600) / 60;
+    format!("{h}h {m:02}m")
+}
+
 #[cfg(target_os = "linux")]
 #[cfg(not(test))]
 fn get_default_home_path() -> String {
