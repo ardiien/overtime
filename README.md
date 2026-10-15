@@ -52,7 +52,7 @@ zeit <COMMAND>
 
 Every command follows the same rules:
 
-* **Shape:** `zeit <noun> <verb>`: `session start|end|edit|delete`, `pause start|end|edit`.
+* **Shape:** `zeit <noun> <verb>`: `session start|end|edit|delete`, `pause start|end|edit|delete`.
   `status` and `report` only read data.
 * **Flags:** `--at` says *when* an action happens (`start`/`end`). `--start`/`--end` are the
   *new values* when editing. Each short flag means the same thing everywhere:
@@ -165,6 +165,16 @@ The pause number is shown by `zeit report <DATE>`.
 ```bash
 zeit pause edit 2026-05-27 1 --start 12:00 --end 12:30
 zeit pause edit 2026-05-27 1 --label lunch
+```
+
+## Delete a pause
+
+Pause numbers start at 1. Deleting one moves the later pauses up by one, so check
+`zeit report <DATE>` again afterwards. Asks for confirmation (Enter means no):
+
+```bash
+zeit pause delete 2026-05-27 1
+zeit pause delete 2026-05-27 1 --yes
 ```
 
 ---

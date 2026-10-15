@@ -4,9 +4,9 @@
  * See http://www.apache.org/licenses/LICENSE-2.0
  */
 
-use crate::output::{fmt_dt, fmt_duration, fmt_label, fmt_time, kv};
+use crate::output::{fmt_dt, fmt_duration, fmt_label, fmt_pause_row, fmt_time, kv};
 use crate::store::Store;
-use crate::util::{local_datetime, parse_date, parse_time, TOOL_NAME};
+use crate::util::{confirm, local_datetime, parse_date, parse_time, TOOL_NAME};
 use anyhow::{anyhow, bail, Result};
 use chrono::{Local, NaiveDate, NaiveTime};
 use clap::{Args, Subcommand};
@@ -51,6 +51,17 @@ enum Commands {
         #[arg(short, long)]
         label: Option<String>,
     },
+    /// Delete a pause of a session's day.
+    Delete {
+        /// Date of the session the pause belongs to (YYYY-MM-DD).
+        #[arg(value_parser = parse_date)]
+        date: NaiveDate,
+        /// 1-based pause number (see `zeit report <DATE>`).
+        id: usize,
+        /// Skip the confirmation prompt.
+        #[arg(short, long)]
+        yes: bool,
+    },
 }
 
 pub fn handle(args: &Pause) -> Result<()> {
@@ -64,7 +75,19 @@ pub fn handle(args: &Pause) -> Result<()> {
             end,
             label,
         } => edit(*date, *id, *start, *end, label.clone()),
+        Commands::Delete { date, id, yes } => delete(*date, *id, *yes),
     }
+}
+
+/// Fail unless `id` is a valid 1-based pause number of `session`.
+fn check_pause_id(session: &crate::store::Session, date: NaiveDate, id: usize) -> Result<()> {
+    if id == 0 || id > session.pauses.len() {
+        bail!(
+            "pause {id} not found - session on {date} has {} pause(s).",
+            session.pauses.len()
+        );
+    }
+    Ok(())
 }
 
 fn start(at: Option<NaiveTime>, label: Option<String>) -> Result<()> {
@@ -185,12 +208,7 @@ fn edit(
         .ok_or_else(|| anyhow!("no session found for {date}."))?;
     let session = &mut store.sessions[idx];
 
-    if id == 0 || id > session.pauses.len() {
-        bail!(
-            "pause {id} not found - session on {date} has {} pause(s).",
-            session.pauses.len()
-        );
-    }
+    check_pause_id(session, date, id)?;
     let pause = &mut session.pauses[id - 1];
 
     // Work out and validate every new value first, so a failed edit prints and saves nothing.
@@ -245,6 +263,34 @@ fn edit(
     }
     if let Some(d) = duration {
         kv("Duration", fmt_duration(d));
+    }
+    Ok(())
+}
+
+fn delete(date: NaiveDate, id: usize, yes: bool) -> Result<()> {
+    let mut store = Store::load()?;
+    let idx = *store
+        .session_indices_on(date)
+        .last()
+        .ok_or_else(|| anyhow!("no session found for {date}."))?;
+    let session = &mut store.sessions[idx];
+    check_pause_id(session, date, id)?;
+
+    println!("Pause on {date} that will be deleted:");
+    println!("  {}", fmt_pause_row(id, &session.pauses[id - 1], Local::now()));
+
+    if !yes && !confirm("Delete this pause?")? {
+        println!("Aborted.");
+        return Ok(());
+    }
+
+    session.pauses.remove(id - 1);
+    let renumbered = id <= session.pauses.len();
+    store.save()?;
+
+    println!("Deleted pause {id} on {date}.");
+    if renumbered {
+        println!("Later pauses moved up by one - check `{TOOL_NAME} report {date}`.");
     }
     Ok(())
 }

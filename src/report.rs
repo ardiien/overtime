@@ -4,7 +4,7 @@
  * See http://www.apache.org/licenses/LICENSE-2.0
  */
 
-use crate::output::{fmt_duration, fmt_label, fmt_session_row, fmt_signed};
+use crate::output::{fmt_duration, fmt_pause_row, fmt_session_row, fmt_signed};
 use crate::store::{Session, Store};
 use crate::util::{Period, parse_period};
 use anyhow::Result;
@@ -138,14 +138,7 @@ pub fn handle(args: &Report) -> Result<()> {
             for s in &sessions {
                 println!("  {}", fmt_session_row(s, now));
                 for (i, p) in s.pauses.iter().enumerate() {
-                    if let Some(dur) = p.duration_secs() {
-                        println!(
-                            "    pause {}  {}  {}",
-                            i + 1,
-                            fmt_label(p.label.as_deref()),
-                            fmt_duration(dur)
-                        );
-                    }
+                    println!("    {}", fmt_pause_row(i + 1, p, now));
                 }
                 add_session(&mut totals, s);
             }

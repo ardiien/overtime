@@ -19,7 +19,7 @@ struct Overtime {
 enum Commands {
     /// Start, end, edit or delete work sessions.
     Session(crate::session::Session),
-    /// Start, end or edit pauses within a session.
+    /// Start, end, edit or delete pauses within a session.
     Pause(crate::pause::Pause),
     /// Show the current active session and pause.
     Status(crate::status::Status),

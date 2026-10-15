@@ -6,7 +6,7 @@
 
 //! Every user-facing formatter lives here so all commands print the same way.
 
-use crate::store::Session;
+use crate::store::{Pause, Session};
 use chrono::{DateTime, Local};
 use std::fmt::Display;
 
@@ -66,6 +66,18 @@ pub fn fmt_session_row(s: &Session, now: DateTime<Local>) -> String {
         fmt_duration(worked),
         fmt_duration(s.pause_secs_at(end)),
         fmt_signed(worked - s.target_secs),
+    )
+}
+
+/// One-line pause description shared by `report <DATE>` and `pause delete`.
+/// `n` is the pause's 1-based number within its session.
+pub fn fmt_pause_row(n: usize, p: &Pause, now: DateTime<Local>) -> String {
+    let running = if p.is_active() { " (running)" } else { "" };
+    let duration = (p.ended_at.unwrap_or(now) - p.started_at).num_seconds();
+    format!(
+        "pause {n}  {}  {}{running}",
+        fmt_label(p.label.as_deref()),
+        fmt_duration(duration)
     )
 }
 

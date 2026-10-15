@@ -7,12 +7,11 @@
 use crate::output::{fmt_dt, fmt_session_row, fmt_target, fmt_time, kv, print_session_summary};
 use crate::store::Store;
 use crate::util::{
-    local_datetime, parse_date, parse_target, parse_time, DEFAULT_TARGET_SECS, TOOL_NAME,
+    confirm, local_datetime, parse_date, parse_target, parse_time, DEFAULT_TARGET_SECS, TOOL_NAME,
 };
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, bail, Result};
 use chrono::{Local, NaiveDate, NaiveTime};
 use clap::{Args, Subcommand};
-use std::io::{self, Write};
 
 #[derive(Args)]
 pub struct Session {
@@ -233,30 +232,9 @@ fn delete(date: NaiveDate, yes: bool) -> Result<()> {
         println!("  {}", fmt_session_row(&store.sessions[i], now));
     }
 
-    if !yes {
-        loop {
-            print!("\nDelete {} session(s)? [y/N] ", indices.len());
-            io::stdout().flush()?;
-
-            let mut input = String::new();
-            let read = io::stdin()
-                .read_line(&mut input)
-                .context("failed to read confirmation")?;
-
-            // End of input or a bare Enter means "no", as the [y/N] prompt promises.
-            if read == 0 {
-                println!("Aborted.");
-                return Ok(());
-            }
-            match input.trim().to_ascii_lowercase().as_str() {
-                "y" | "yes" => break,
-                "" | "n" | "no" => {
-                    println!("Aborted.");
-                    return Ok(());
-                }
-                _ => println!("Please answer yes or no."),
-            }
-        }
+    if !yes && !confirm(&format!("Delete {} session(s)?", indices.len()))? {
+        println!("Aborted.");
+        return Ok(());
     }
 
     for &i in indices.iter().rev() {

@@ -6,6 +6,7 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Local, NaiveDate, NaiveTime, TimeZone};
+use std::io::{self, Write};
 
 /// Default daily target (8 hours) in seconds. Used when no `--target` is given
 /// and for sessions stored before per-session targets existed.
@@ -97,4 +98,25 @@ pub fn local_datetime(date: NaiveDate, time: NaiveTime) -> Result<DateTime<Local
         .from_local_datetime(&date.and_time(time))
         .single()
         .with_context(|| format!("ambiguous local time {time}"))
+}
+
+/// Ask a `[y/N]` question on the terminal. Enter or end of input means no.
+pub fn confirm(question: &str) -> Result<bool> {
+    loop {
+        print!("\n{question} [y/N] ");
+        io::stdout().flush()?;
+
+        let mut input = String::new();
+        let read = io::stdin()
+            .read_line(&mut input)
+            .context("failed to read confirmation")?;
+        if read == 0 {
+            return Ok(false);
+        }
+        match input.trim().to_ascii_lowercase().as_str() {
+            "y" | "yes" => return Ok(true),
+            "" | "n" | "no" => return Ok(false),
+            _ => println!("Please answer yes or no."),
+        }
+    }
 }
