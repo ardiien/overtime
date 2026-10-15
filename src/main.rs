@@ -4,16 +4,23 @@
  * See http://www.apache.org/licenses/LICENSE-2.0
  */
 
-mod delete;
-mod edit;
+mod output;
 mod overtime;
 mod pause;
-mod record;
 mod report;
+mod session;
 mod status;
 mod store;
 mod util;
 
-fn main() -> anyhow::Result<()> {
-    overtime::execute()
+use std::process::ExitCode;
+
+fn main() -> ExitCode {
+    match overtime::execute() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e:#}");
+            ExitCode::FAILURE
+        }
+    }
 }

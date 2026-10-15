@@ -4,7 +4,7 @@
  * See http://www.apache.org/licenses/LICENSE-2.0
  */
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 /// Track your overtime hours from the command line.
@@ -17,40 +17,23 @@ struct Overtime {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Record work sessions.
-    Record(crate::record::Record),
-    /// Show the current active session and pauses.
-    Status(crate::status::Status),
-    /// Manage pauses within a session.
+    /// Start, end, edit or delete work sessions.
+    Session(crate::session::Session),
+    /// Start, end or edit pauses within a session.
     Pause(crate::pause::Pause),
-    /// Show a report.
-    /// No flags result in all-time summary, broken down by year.
+    /// Show the current active session and pause.
+    Status(crate::status::Status),
+    /// Show a report for a year, month, day or all time.
     Report(crate::report::Report),
-    /// Edit a session's start/end date-time or a pause within it.
-    Edit(crate::edit::Edit),
-    /// Delete all sessions for a given date.
-    Delete(crate::delete::Delete),
 }
 
 pub fn execute() -> Result<()> {
     let overtime = Overtime::parse();
 
     match &overtime.command {
-        Commands::Record(args) => {
-            crate::record::handle(args).context("'record' command exception")?
-        }
-        Commands::Status(args) => {
-            crate::status::handle(args).context("'status' command exception")?
-        }
-        Commands::Pause(args) => crate::pause::handle(args).context("'pause' command exception")?,
-        Commands::Report(args) => {
-            crate::report::handle(args).context("'report' command exception")?
-        }
-        Commands::Edit(args) => crate::edit::handle(args).context("'edit' command exception")?,
-        Commands::Delete(args) => {
-            crate::delete::handle(args).context("'delete' command exception")?
-        }
+        Commands::Session(args) => crate::session::handle(args),
+        Commands::Pause(args) => crate::pause::handle(args),
+        Commands::Status(args) => crate::status::handle(args),
+        Commands::Report(args) => crate::report::handle(args),
     }
-
-    Ok(())
 }

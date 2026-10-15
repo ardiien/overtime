@@ -4,64 +4,20 @@
  * See http://www.apache.org/licenses/LICENSE-2.0
  */
 
-use crate::store::{format_duration, Session, Store};
-use crate::util::format_hhmm;
-use anyhow::{bail, Result};
+use crate::output::{fmt_duration, fmt_label, fmt_session_row, fmt_signed};
+use crate::store::{Session, Store};
+use crate::util::{Period, parse_period};
+use anyhow::Result;
 use chrono::{Datelike, IsoWeek, Local};
-use clap::{Args, Subcommand};
+use clap::Args;
 use std::collections::BTreeMap;
 
 #[derive(Args)]
 pub struct Report {
-    /// Filter by year, e.g. --year 2026
-    #[arg(short, long)]
-    year: Option<i32>,
-    /// Filter by month (1–12), e.g. --month 5
-    #[arg(short, long)]
-    month: Option<u32>,
-    /// Filter by day (1–31), e.g. --day 22
-    #[arg(short, long)]
-    day: Option<u32>,
-
-    #[command(subcommand)]
-    command: Option<Commands>,
-}
-
-#[derive(Subcommand)]
-enum Commands {
-    /// Show entries for the current day
-    Now,
-}
-
-pub fn handle(args: &Report) -> Result<()> {
-    let filter = match &args.command {
-        Some(Commands::Now) => {
-            let now = Local::now();
-
-            Filters {
-                year: None,
-                month: None,
-                day: Some(now.day()),
-            }
-        }
-
-        None => Filters {
-            year: args.year,
-            month: args.month,
-            day: args.day,
-        },
-    };
-
-    handle_cmd(filter)?;
-
-    Ok(())
-}
-
-/// Filters passed in from the terminal.
-pub struct Filters {
-    pub year: Option<i32>,
-    pub month: Option<u32>,
-    pub day: Option<u32>,
+    /// Period to report on: YYYY, YYYY-MM, YYYY-MM-DD or `today`.
+    /// Omit for the all-time summary, broken down by year.
+    #[arg(value_parser = parse_period)]
+    period: Option<Period>,
 }
 
 /// Aggregated stats for a group of sessions.
@@ -81,76 +37,52 @@ impl Bucket {
 }
 
 fn add_session(bucket: &mut Bucket, session: &Session) {
-    if let Some(worked) = session.worked_secs() {
+    if let (Some(worked), Some(ended)) = (session.worked_secs(), session.ended_at) {
         bucket.days += 1;
         bucket.worked_secs += worked;
-        bucket.pause_secs += session.total_pause_secs();
+        bucket.pause_secs += session.pause_secs_at(ended);
         bucket.target_secs += session.target_secs;
     }
 }
 
 fn print_bucket(label: &str, b: &Bucket) {
-    let overtime = b.overtime_secs();
-    let sign = if overtime >= 0 { "+" } else { "-" };
     println!(
-        "  {:<18} {:>3} day(s)   worked {}   pauses {}   overtime {}{}",
+        "  {:<18} {:>3} day(s)   worked {}   pauses {}   overtime {}",
         label,
         b.days,
-        format_duration(b.worked_secs),
-        format_duration(b.pause_secs),
-        sign,
-        format_duration(overtime.abs()),
+        fmt_duration(b.worked_secs),
+        fmt_duration(b.pause_secs),
+        fmt_signed(b.overtime_secs()),
     );
 }
 
-fn handle_cmd(f: Filters) -> Result<()> {
-    let now = Local::now();
-
-    // Resolve defaults: --month or --day without --year implies current year.
-    let year = f.year.or_else(|| {
-        if f.month.is_some() || f.day.is_some() {
-            Some(now.year())
-        } else {
-            None
-        }
-    });
-    // --day without --month implies current month.
-    let month = f.month.or_else(|| {
-        if f.day.is_some() {
-            Some(now.month())
-        } else {
-            None
-        }
-    });
-    let day = f.day;
-
-    // Validate flag combos.
-    if day.is_some() && month.is_none() {
-        bail!(
-            "--day requires --month (or the current month is implied; pass --month explicitly if needed)"
-        );
-    }
-
+pub fn handle(args: &Report) -> Result<()> {
     let store = Store::load()?;
 
-    // Only completed sessions, filtered by the provided flags.
+    // Only completed sessions, filtered by the requested period.
     let sessions: Vec<&Session> = store
         .sessions
         .iter()
         .filter(|s| !s.is_active())
-        .filter(|s| year.map_or(true, |y| s.started_at.year() == y))
-        .filter(|s| month.map_or(true, |m| s.started_at.month() == m))
-        .filter(|s| day.map_or(true, |d| s.started_at.day() == d))
+        .filter(|s| match args.period {
+            None => true,
+            Some(Period::Year(y)) => s.started_at.year() == y,
+            Some(Period::Month(y, m)) => s.started_at.year() == y && s.started_at.month() == m,
+            Some(Period::Day(d)) => s.started_at.date_naive() == d,
+        })
         .collect();
 
     if sessions.is_empty() {
-        println!("No completed sessions for the given filter.");
+        match args.period {
+            None => println!("No completed sessions."),
+            Some(p) => println!("No completed sessions for {}.", p.label()),
+        }
         return Ok(());
     }
 
-    match (year, month, day) {
-        // No filters → all-time, broken down by year.
-        (None, None, None) => {
+    match args.period {
+        // No period → all-time, broken down by year.
+        None => {
             println!("── All-time report (by year) ────────────────────────────────");
             let mut totals = Bucket::default();
             let mut by_year: BTreeMap<i32, Bucket> = BTreeMap::new();
@@ -165,8 +97,8 @@ fn handle_cmd(f: Filters) -> Result<()> {
             print_bucket("Total", &totals);
         }
 
-        // Year only → that year broken down by month.
-        (Some(y), None, None) => {
+        // Year → that year broken down by month.
+        Some(Period::Year(y)) => {
             println!("── {y} report (by month) ────────────────────────────────────");
             let mut totals = Bucket::default();
             let mut by_month: BTreeMap<u32, Bucket> = BTreeMap::new();
@@ -181,8 +113,8 @@ fn handle_cmd(f: Filters) -> Result<()> {
             print_bucket(&format!("{y} total"), &totals);
         }
 
-        // Year + month → that month broken down by ISO week.
-        (Some(y), Some(m), None) => {
+        // Month → that month broken down by ISO week.
+        Some(Period::Month(y, m)) => {
             println!("── {y}-{m:02} report (by week) ──────────────────────────────────");
             let mut totals = Bucket::default();
             let mut by_week: BTreeMap<(i32, u32), Bucket> = BTreeMap::new();
@@ -198,47 +130,28 @@ fn handle_cmd(f: Filters) -> Result<()> {
             print_bucket(&format!("{y}-{m:02} total"), &totals);
         }
 
-        // Year + month + day → list each session individually.
-        (Some(y), Some(m), Some(d)) => {
-            println!("── {y}-{m:02}-{d:02} sessions ──────────────────────────────────────");
+        // Day → list each session individually, with its pauses.
+        Some(Period::Day(d)) => {
+            println!("── {d} sessions ──────────────────────────────────────────");
+            let now = Local::now();
             let mut totals = Bucket::default();
             for s in &sessions {
-                let started = s.started_at.format("%H:%M:%S");
-                let ended = s
-                    .ended_at
-                    .map(|e| e.format("%H:%M:%S").to_string())
-                    .unwrap_or_else(|| "ongoing".to_string());
-                let worked = s.worked_secs().unwrap_or(0);
-                let pause = s.total_pause_secs();
-                let ot = worked - s.target_secs;
-                let sign = if ot >= 0 { "+" } else { "-" };
-                println!(
-                    "  {} → {}   target {}   worked {}   pauses {}   overtime {}{}",
-                    started,
-                    ended,
-                    format_hhmm(s.target_secs),
-                    format_duration(worked),
-                    format_duration(pause),
-                    sign,
-                    format_duration(ot.abs()),
-                );
-
-                let mut i = 0;
-                for p in &s.pauses {
+                println!("  {}", fmt_session_row(s, now));
+                for (i, p) in s.pauses.iter().enumerate() {
                     if let Some(dur) = p.duration_secs() {
-                        let label = p.label.as_deref().unwrap_or("(no label)");
-                        println!("  [{}] {} - {}", i + 1, label, format_duration(dur));
-                        i += 1;
+                        println!(
+                            "    pause {}  {}  {}",
+                            i + 1,
+                            fmt_label(p.label.as_deref()),
+                            fmt_duration(dur)
+                        );
                     }
                 }
                 add_session(&mut totals, s);
             }
             println!("{}", "─".repeat(61));
-            print_bucket(&format!("{y}-{m:02}-{d:02} total"), &totals);
+            print_bucket(&format!("{d} total"), &totals);
         }
-
-        // --month without --year is resolved above; this arm is unreachable.
-        _ => unreachable!(),
     }
 
     println!();

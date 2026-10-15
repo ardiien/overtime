@@ -6,7 +6,7 @@
 
 use crate::util::{DEFAULT_TARGET_SECS, TOOL_NAME};
 use anyhow::{Context, Result};
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Local, NaiveDate};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::{env, fs};
@@ -35,7 +35,7 @@ impl Pause {
     }
 }
 
-/// A single work session from `record start` to `record end`.
+/// A single work session from `session start` to `session end`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     /// Unique identifier (unix timestamp of start, good enough for now).
@@ -77,17 +77,22 @@ impl Session {
         self.pauses.iter().any(|p| p.is_active())
     }
 
-    /// Total pause time in seconds (only counts completed pauses).
-    pub fn total_pause_secs(&self) -> i64 {
-        self.pauses.iter().filter_map(|p| p.duration_secs()).sum()
+    /// Total pause time in seconds as of `at`. A pause still running counts up to `at`.
+    pub fn pause_secs_at(&self, at: DateTime<Local>) -> i64 {
+        self.pauses
+            .iter()
+            .map(|p| (p.ended_at.unwrap_or(at) - p.started_at).num_seconds())
+            .sum()
     }
 
-    /// Net worked seconds: (end - start) minus all completed pauses.
-    /// Returns `None` if the session hasn't ended.
+    /// Net worked seconds as of `at`: (at - start) minus all pause time.
+    pub fn worked_secs_at(&self, at: DateTime<Local>) -> i64 {
+        (at - self.started_at).num_seconds() - self.pause_secs_at(at)
+    }
+
+    /// Net worked seconds of a finished session. `None` if the session hasn't ended.
     pub fn worked_secs(&self) -> Option<i64> {
-        let end = self.ended_at?;
-        let gross = (end - self.started_at).num_seconds();
-        Some(gross - self.total_pause_secs())
+        self.ended_at.map(|end| self.worked_secs_at(end))
     }
 }
 
@@ -119,7 +124,7 @@ impl Store {
             .with_context(|| format!("failed to parse {}", path.display()))
     }
 
-    /// Persist to disk (creates `~/.overtime/` if needed).
+    /// Persist to disk (creates the data directory if needed).
     pub fn save(&self) -> Result<()> {
         let path_str = Self::path();
         let path = Path::new(&path_str);
@@ -136,24 +141,17 @@ impl Store {
     pub fn active_session_mut(&mut self) -> Option<&mut Session> {
         self.sessions.iter_mut().find(|s| s.is_active())
     }
-}
 
-/// Pretty-print a duration given as total seconds.
-pub fn format_duration(total_secs: i64) -> String {
-    let sign = if total_secs < 0 { "-" } else { "" };
-    let total_secs = total_secs.unsigned_abs();
-    let h = total_secs / 3600;
-    let m = (total_secs % 3600) / 60;
-    let s = total_secs % 60;
-    format!("{sign}{h}h {m:02}m {s:02}s")
-}
-
-/// Pretty-print a target duration given as total seconds.
-pub fn format_target(total_secs: i64) -> String {
-    let total_secs = total_secs.unsigned_abs();
-    let h = total_secs / 3600;
-    let m = (total_secs % 3600) / 60;
-    format!("{h}h {m:02}m")
+    /// Indices of all sessions that started on `date`, oldest first.
+    /// Commands that address one session by date use the last of these.
+    pub fn session_indices_on(&self, date: NaiveDate) -> Vec<usize> {
+        self.sessions
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.started_at.date_naive() == date)
+            .map(|(i, _)| i)
+            .collect()
+    }
 }
 
 #[cfg(target_os = "linux")]
