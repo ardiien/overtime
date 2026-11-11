@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4.5.39", features = ["cargo", "color", "derive"] }
+clap_complete = "4.5"
 anstream = "1.0"
 anstyle = "1.0"
 anyhow = "1.0.100"
