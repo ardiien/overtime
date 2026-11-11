@@ -8,8 +8,11 @@ use crate::util::{DEFAULT_TARGET_SECS, TOOL_NAME};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local, NaiveDate};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
-use std::{env, fs};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::{env, fs, io::Write};
+
+static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// A single pause within a work session (e.g. lunch break).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,15 +107,50 @@ pub struct Store {
 
 impl Store {
     /// Path to the data file.
-    pub fn path() -> String {
-        let user_config_dir = get_default_home_path();
-        format!("{user_config_dir}/{}/data.json", TOOL_NAME)
+    pub fn path() -> Result<PathBuf> {
+        if let Some(path) = env::var_os("ZEIT_DATA").filter(|path| !path.is_empty()) {
+            return Ok(PathBuf::from(path));
+        }
+        Ok(get_default_home_path()?.join(TOOL_NAME).join("data.json"))
+    }
+
+    pub fn config_path() -> Result<PathBuf> {
+        let data_path = Self::path()?;
+        Ok(data_path
+            .parent()
+            .context("data path has no parent directory")?
+            .join("config.json"))
+    }
+
+    pub fn default_target_secs() -> Result<i64> {
+        let path = Self::config_path()?;
+        if !path.exists() {
+            return Ok(DEFAULT_TARGET_SECS);
+        }
+        let contents = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        let config: Preferences = serde_json::from_str(&contents)
+            .with_context(|| format!("failed to parse {}", path.display()))?;
+        let target = config.default_target_secs.unwrap_or(DEFAULT_TARGET_SECS);
+        anyhow::ensure!(
+            target >= 0,
+            "default target in {} cannot be negative",
+            path.display()
+        );
+        Ok(target)
+    }
+
+    pub fn set_default_target_secs(target_secs: i64) -> Result<()> {
+        let path = Self::config_path()?;
+        let contents = serde_json::to_vec_pretty(&Preferences {
+            default_target_secs: Some(target_secs),
+        })?;
+        atomic_write(&path, &contents)
     }
 
     /// Load from disk, creating an empty store if the file doesn't exist yet.
     pub fn load() -> Result<Self> {
-        let path_str = Self::path();
-        let path = Path::new(&path_str);
+        let path = Self::path()?;
 
         if !path.exists() {
             return Ok(Self::default());
@@ -126,15 +164,9 @@ impl Store {
 
     /// Persist to disk (creates the data directory if needed).
     pub fn save(&self) -> Result<()> {
-        let path_str = Self::path();
-        let path = Path::new(&path_str);
-
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create directory {}", parent.display()))?;
-        }
-        let contents = serde_json::to_string_pretty(self)?;
-        fs::write(&path, contents).with_context(|| format!("failed to write {}", path.display()))
+        let path = Self::path()?;
+        let contents = serde_json::to_vec_pretty(self)?;
+        atomic_write(&path, &contents)
     }
 
     /// Return the currently active (not-yet-ended) session, if any.
@@ -154,16 +186,66 @@ impl Store {
     }
 }
 
+#[derive(Default, Serialize, Deserialize)]
+struct Preferences {
+    #[serde(default)]
+    default_target_secs: Option<i64>,
+}
+
+fn atomic_write(path: &Path, contents: &[u8]) -> Result<()> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create directory {}", parent.display()))?;
+    }
+    let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let file_name = path
+        .file_name()
+        .context("data file path has no filename")?
+        .to_string_lossy();
+    let temporary_path = path.with_file_name(format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        counter
+    ));
+
+    let write_result = (|| -> Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary_path)
+            .with_context(|| format!("failed to create {}", temporary_path.display()))?;
+        file.write_all(contents)
+            .with_context(|| format!("failed to write {}", temporary_path.display()))?;
+        file.sync_all()
+            .with_context(|| format!("failed to sync {}", temporary_path.display()))?;
+        fs::rename(&temporary_path, path)
+            .with_context(|| format!("failed to replace {}", path.display()))?;
+        Ok(())
+    })();
+
+    if write_result.is_err() {
+        let _ = fs::remove_file(&temporary_path);
+    }
+    write_result
+}
+
 #[cfg(target_os = "linux")]
-#[cfg(not(test))]
-fn get_default_home_path() -> String {
-    env::var("XDG_CONFIG_HOME")
-        .unwrap_or_else(|_| -> String { env::var("HOME").unwrap() + "/.config" })
+fn get_default_home_path() -> Result<PathBuf> {
+    if let Some(path) = env::var_os("XDG_CONFIG_HOME") {
+        return Ok(PathBuf::from(path));
+    }
+    let home = env::var_os("HOME").context("HOME is not set")?;
+    Ok(PathBuf::from(home).join(".config"))
 }
 
 #[cfg(target_os = "macos")]
-#[cfg(not(test))]
-fn get_default_home_path() -> String {
-    env::var("XDG_DATA_HOME")
-        .unwrap_or_else(|_| -> String { env::var("HOME").unwrap() + "/Library" })
+fn get_default_home_path() -> Result<PathBuf> {
+    if let Some(path) = env::var_os("XDG_DATA_HOME") {
+        return Ok(PathBuf::from(path));
+    }
+    let home = env::var_os("HOME").context("HOME is not set")?;
+    Ok(PathBuf::from(home).join("Library"))
 }

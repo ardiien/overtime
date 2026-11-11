@@ -4,6 +4,7 @@
  * See http://www.apache.org/licenses/LICENSE-2.0
  */
 
+mod config;
 mod output;
 mod overtime;
 mod pause;
