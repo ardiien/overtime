@@ -9,11 +9,11 @@ name = "zeit"
 path = "src/main.rs"
 
 [dependencies]
-clap = { version = "4.5.39", features = ["cargo", "color", "derive"] }
-clap_complete = "4.5"
-anstream = "1.0"
-anstyle = "1.0"
-anyhow = "1.0.100"
-serde = { version = "1.0.219", features = ["derive", "alloc"] }
-serde_json = "1.0.141"
-chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.6.7", features = ["cargo", "color", "derive"] }
+clap_complete = "4.6.11"
+anstream = "1.0.0"
+anstyle = "1.0.14"
+anyhow = "1.0.104"
+serde = { version = "1.0.229", features = ["derive", "alloc"] }
+serde_json = "1.0.154"
+chrono = { version = "0.4.45", features = ["serde"] }
