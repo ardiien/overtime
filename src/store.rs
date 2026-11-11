@@ -174,8 +174,13 @@ impl Store {
         self.sessions.iter_mut().find(|s| s.is_active())
     }
 
+    /// Return the last session started on `date`, if any.
+    pub fn last_session_on_mut(&mut self, date: NaiveDate) -> Option<&mut Session> {
+        let index = self.session_indices_on(date).last().copied()?;
+        self.sessions.get_mut(index)
+    }
+
     /// Indices of all sessions that started on `date`, oldest first.
-    /// Commands that address one session by date use the last of these.
     pub fn session_indices_on(&self, date: NaiveDate) -> Vec<usize> {
         self.sessions
             .iter()

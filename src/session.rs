@@ -6,11 +6,9 @@
 
 use crate::output::{fmt_dt, fmt_session_row, fmt_target, fmt_time, kv, print_session_summary};
 use crate::store::Store;
-use crate::util::{
-    confirm, local_datetime, parse_date, parse_target, parse_time, DEFAULT_TARGET_SECS, TOOL_NAME,
-};
-use anyhow::{anyhow, bail, Result};
-use chrono::{Local, NaiveDate, NaiveTime};
+use crate::util::{At, TOOL_NAME, confirm, parse_at, parse_date, parse_target};
+use anyhow::{Result, anyhow, bail};
+use chrono::{Local, NaiveDate};
 use clap::{Args, Subcommand};
 
 #[derive(Args)]
@@ -24,36 +22,36 @@ enum Commands {
     /// Start a new work session.
     Start {
         /// Start at a specific past time today, e.g. --at 09:00.
-        #[arg(short, long, value_parser = parse_time)]
-        at: Option<NaiveTime>,
-        /// Daily target for this session as HH:MM, e.g. --target 4:00 (default 8:00).
+        #[arg(short, long, value_parser = parse_at)]
+        at: Option<At>,
+        /// Daily target for this session as HH:MM (default: configured target, initially 8:00).
         #[arg(short, long, value_parser = parse_target)]
         target: Option<i64>,
     },
     /// End the current work session.
     End {
         /// End at a specific past time today, e.g. --at 17:30.
-        #[arg(short, long, value_parser = parse_time)]
-        at: Option<NaiveTime>,
+        #[arg(short, long, value_parser = parse_at)]
+        at: Option<At>,
     },
     /// Edit a session's start time, end time or daily target.
     Edit {
-        /// Date of the session to edit (YYYY-MM-DD).
+        /// Date of the session to edit (YYYY-MM-DD, today or yesterday).
         #[arg(value_parser = parse_date)]
         date: NaiveDate,
         /// New start time (HH:MM or HH:MM:SS).
-        #[arg(short, long, value_parser = parse_time)]
-        start: Option<NaiveTime>,
+        #[arg(short, long, value_parser = parse_at)]
+        start: Option<At>,
         /// New end time (HH:MM or HH:MM:SS).
-        #[arg(short, long, value_parser = parse_time)]
-        end: Option<NaiveTime>,
+        #[arg(short, long, value_parser = parse_at)]
+        end: Option<At>,
         /// New daily target as HH:MM, e.g. --target 4:00.
         #[arg(short, long, value_parser = parse_target)]
         target: Option<i64>,
     },
     /// Delete all sessions on a date.
     Delete {
-        /// Date to delete (YYYY-MM-DD).
+        /// Date to delete (YYYY-MM-DD, today or yesterday).
         #[arg(value_parser = parse_date)]
         date: NaiveDate,
         /// Skip the confirmation prompt.
@@ -76,7 +74,7 @@ pub fn handle(args: &Session) -> Result<()> {
     }
 }
 
-fn start(at: Option<NaiveTime>, target: Option<i64>) -> Result<()> {
+fn start(at: Option<At>, target: Option<i64>) -> Result<()> {
     let mut store = Store::load()?;
 
     if store.active_session_mut().is_some() {
@@ -85,7 +83,7 @@ fn start(at: Option<NaiveTime>, target: Option<i64>) -> Result<()> {
 
     let now = Local::now();
     let started_at = match at {
-        Some(t) => local_datetime(now.date_naive(), t)?,
+        Some(at) => at.resolve(now.date_naive())?,
         None => now,
     };
     if started_at > now {
@@ -95,7 +93,10 @@ fn start(at: Option<NaiveTime>, target: Option<i64>) -> Result<()> {
         );
     }
 
-    let target_secs = target.unwrap_or(DEFAULT_TARGET_SECS);
+    let target_secs = match target {
+        Some(target) => target,
+        None => Store::default_target_secs()?,
+    };
     store
         .sessions
         .push(crate::store::Session::new(started_at, target_secs));
@@ -106,7 +107,7 @@ fn start(at: Option<NaiveTime>, target: Option<i64>) -> Result<()> {
     Ok(())
 }
 
-fn end(at: Option<NaiveTime>) -> Result<()> {
+fn end(at: Option<At>) -> Result<()> {
     let mut store = Store::load()?;
 
     let session = store
@@ -119,7 +120,7 @@ fn end(at: Option<NaiveTime>) -> Result<()> {
 
     let now = Local::now();
     let ended_at = match at {
-        Some(t) => local_datetime(session.started_at.date_naive(), t)?,
+        Some(at) => at.resolve(now.date_naive())?,
         None => now,
     };
     if ended_at <= session.started_at {
@@ -145,22 +146,15 @@ fn end(at: Option<NaiveTime>) -> Result<()> {
     Ok(())
 }
 
-fn edit(
-    date: NaiveDate,
-    start: Option<NaiveTime>,
-    end: Option<NaiveTime>,
-    target: Option<i64>,
-) -> Result<()> {
+fn edit(date: NaiveDate, start: Option<At>, end: Option<At>, target: Option<i64>) -> Result<()> {
     if start.is_none() && end.is_none() && target.is_none() {
         bail!("nothing to edit - provide --start, --end or --target.");
     }
 
     let mut store = Store::load()?;
-    let idx = *store
-        .session_indices_on(date)
-        .last()
+    let session = store
+        .last_session_on_mut(date)
         .ok_or_else(|| anyhow!("no session found for {date}."))?;
-    let session = &mut store.sessions[idx];
 
     // Work out and validate every new value first, so a failed edit prints and saves nothing.
     let old_start = session.started_at;
@@ -168,22 +162,41 @@ fn edit(
     let old_target = session.target_secs;
 
     let new_start = match start {
-        Some(t) => local_datetime(date, t)?,
+        Some(at) => at.resolve(date)?,
         None => old_start,
     };
     let new_end = match end {
-        Some(t) => {
+        Some(at) => {
             if session.is_active() {
                 bail!("session is still running - run `{TOOL_NAME} session end` first.");
             }
-            Some(local_datetime(date, t)?)
+            Some(at.resolve(date)?)
         }
         None => old_end,
     };
-    if let Some(e) = new_end {
-        if e <= new_start {
-            bail!("session end must be after session start.");
+    if matches!(new_end, Some(e) if e <= new_start) {
+        bail!("session end must be after session start.");
+    }
+    let now = Local::now();
+    let bound_end = new_end.unwrap_or(now);
+    if new_start > now || bound_end > now {
+        bail!("session times cannot be in the future.");
+    }
+    let mut pauses: Vec<_> = session
+        .pauses
+        .iter()
+        .map(|pause| (pause.started_at, pause.ended_at.unwrap_or(now)))
+        .collect();
+    pauses.sort_by_key(|(pause_start, _)| *pause_start);
+    let mut previous_end = new_start;
+    for (pause_start, pause_end) in pauses {
+        if pause_start < new_start || pause_end > bound_end {
+            bail!("session times must contain all pauses.");
         }
+        if pause_start < previous_end {
+            bail!("session times cannot make pauses overlap.");
+        }
+        previous_end = pause_end;
     }
     let new_target = target.unwrap_or(old_target);
 
@@ -199,22 +212,26 @@ fn edit(
     if start.is_some() {
         println!(
             "Updated session start {} → {}",
-            fmt_dt(old_start),
-            fmt_dt(new_start)
+            crate::output::paint(fmt_dt(old_start), crate::output::Style::Dim),
+            crate::output::paint(fmt_dt(new_start), crate::output::Style::Bold)
         );
     }
     if let (Some(_), Some(e)) = (end, new_end) {
         let old = old_end.map(fmt_dt).unwrap_or_else(|| "(none)".to_string());
-        println!("Updated session end {old} → {}", fmt_dt(e));
+        println!(
+            "Updated session end {} → {}",
+            crate::output::paint(old, crate::output::Style::Dim),
+            crate::output::paint(fmt_dt(e), crate::output::Style::Bold)
+        );
     }
     if target.is_some() {
         println!(
             "Updated session target {} → {}",
-            fmt_target(old_target),
-            fmt_target(new_target)
+            crate::output::paint(fmt_target(old_target), crate::output::Style::Dim),
+            crate::output::paint(fmt_target(new_target), crate::output::Style::Bold)
         );
     }
-    print_session_summary(&updated, Local::now(), true);
+    print_session_summary(&updated, now, true);
     Ok(())
 }
 
@@ -233,7 +250,10 @@ fn delete(date: NaiveDate, yes: bool) -> Result<()> {
     }
 
     if !yes && !confirm(&format!("Delete {} session(s)?", indices.len()))? {
-        println!("Aborted.");
+        println!(
+            "{}",
+            crate::output::paint("Aborted.", crate::output::Style::Warning)
+        );
         return Ok(());
     }
 

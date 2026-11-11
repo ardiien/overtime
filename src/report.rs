@@ -4,29 +4,36 @@
  * See http://www.apache.org/licenses/LICENSE-2.0
  */
 
-use crate::output::{fmt_duration, fmt_pause_row, fmt_session_row, fmt_signed};
+use crate::output::{Style, fmt_duration, fmt_pause_row, fmt_session_row, fmt_signed, paint};
 use crate::store::{Session, Store};
 use crate::util::{Period, parse_period};
 use anyhow::Result;
-use chrono::{Datelike, IsoWeek, Local};
+use chrono::{Datelike, IsoWeek, Local, NaiveDate};
 use clap::Args;
-use std::collections::BTreeMap;
+use serde::Serialize;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Args)]
 pub struct Report {
-    /// Period to report on: YYYY, YYYY-MM, YYYY-MM-DD or `today`.
+    /// Period to report on: YYYY, YYYY-MM, YYYY-Www, YYYY-MM-DD, today or yesterday.
     /// Omit for the all-time summary, broken down by year.
     #[arg(value_parser = parse_period)]
     period: Option<Period>,
+    /// Export the report as JSON.
+    #[arg(long, conflicts_with = "csv")]
+    json: bool,
+    /// Export the report as CSV.
+    #[arg(long)]
+    csv: bool,
 }
 
-/// Aggregated stats for a group of sessions.
 #[derive(Default)]
 struct Bucket {
-    days: u32,
+    dates: BTreeSet<NaiveDate>,
+    sessions: u32,
+    ongoing_sessions: u32,
     worked_secs: i64,
     pause_secs: i64,
-    /// Sum of each session's own daily target.
     target_secs: i64,
 }
 
@@ -34,119 +41,364 @@ impl Bucket {
     fn overtime_secs(&self) -> i64 {
         self.worked_secs - self.target_secs
     }
-}
 
-fn add_session(bucket: &mut Bucket, session: &Session) {
-    if let (Some(worked), Some(ended)) = (session.worked_secs(), session.ended_at) {
-        bucket.days += 1;
-        bucket.worked_secs += worked;
-        bucket.pause_secs += session.pause_secs_at(ended);
-        bucket.target_secs += session.target_secs;
+    fn line(&self, period: impl Into<String>) -> ReportLine {
+        ReportLine {
+            period: period.into(),
+            days: self.dates.len() as u32,
+            sessions: self.sessions,
+            ongoing_sessions: self.ongoing_sessions,
+            worked_seconds: self.worked_secs,
+            pause_seconds: self.pause_secs,
+            target_seconds: self.target_secs,
+            overtime_seconds: self.overtime_secs(),
+        }
     }
 }
 
-fn print_bucket(label: &str, b: &Bucket) {
+#[derive(Serialize)]
+struct ReportLine {
+    period: String,
+    days: u32,
+    sessions: u32,
+    ongoing_sessions: u32,
+    worked_seconds: i64,
+    pause_seconds: i64,
+    target_seconds: i64,
+    overtime_seconds: i64,
+}
+
+#[derive(Serialize)]
+struct JsonReport<'a> {
+    period: String,
+    rows: &'a [ReportLine],
+    total: &'a ReportLine,
+}
+
+fn add_session(bucket: &mut Bucket, session: &Session, now: chrono::DateTime<Local>) {
+    let end = session.ended_at.unwrap_or(now);
+    bucket.dates.insert(session.started_at.date_naive());
+    bucket.sessions += 1;
+    bucket.ongoing_sessions += u32::from(session.is_active());
+    bucket.worked_secs += session
+        .worked_secs()
+        .unwrap_or_else(|| session.worked_secs_at(end));
+    bucket.pause_secs += session.pause_secs_at(end);
+    bucket.target_secs += session.target_secs;
+}
+
+fn print_line(line: &ReportLine) {
+    let padded_label = format!("{:<18}", line.period);
+    let label = if line.period == "Total" || line.period.ends_with(" total") {
+        paint(padded_label, Style::Bold)
+    } else {
+        padded_label
+    };
+    let ongoing = if line.ongoing_sessions > 0 {
+        paint(
+            format!("   ongoing {}", line.ongoing_sessions),
+            Style::Warning,
+        )
+    } else {
+        String::new()
+    };
     println!(
-        "  {:<18} {:>3} day(s)   worked {}   pauses {}   overtime {}",
+        "  {} {:>3} day(s)   worked {}   pauses {}   overtime {}{}",
         label,
-        b.days,
-        fmt_duration(b.worked_secs),
-        fmt_duration(b.pause_secs),
-        fmt_signed(b.overtime_secs()),
+        line.days,
+        fmt_duration(line.worked_seconds),
+        fmt_duration(line.pause_seconds),
+        fmt_signed(line.overtime_seconds),
+        ongoing
     );
+}
+
+fn export_json(period: &str, rows: &[ReportLine], total: &ReportLine) -> Result<()> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&JsonReport {
+            period: period.to_string(),
+            rows,
+            total,
+        })?
+    );
+    Ok(())
+}
+
+fn export_csv(rows: &[ReportLine], total: &ReportLine) {
+    println!(
+        "period,days,sessions,ongoing_sessions,worked_seconds,pause_seconds,target_seconds,overtime_seconds"
+    );
+    for row in rows.iter().chain(std::iter::once(total)) {
+        println!(
+            "{},{},{},{},{},{},{},{}",
+            row.period,
+            row.days,
+            row.sessions,
+            row.ongoing_sessions,
+            row.worked_seconds,
+            row.pause_seconds,
+            row.target_seconds,
+            row.overtime_seconds
+        );
+    }
 }
 
 pub fn handle(args: &Report) -> Result<()> {
     let store = Store::load()?;
+    let now = Local::now();
 
-    // Only completed sessions, filtered by the requested period.
     let sessions: Vec<&Session> = store
         .sessions
         .iter()
-        .filter(|s| !s.is_active())
         .filter(|s| match args.period {
             None => true,
             Some(Period::Year(y)) => s.started_at.year() == y,
             Some(Period::Month(y, m)) => s.started_at.year() == y && s.started_at.month() == m,
+            Some(Period::Week(y, w)) => {
+                let iso = s.started_at.iso_week();
+                iso.year() == y && iso.week() == w
+            }
             Some(Period::Day(d)) => s.started_at.date_naive() == d,
         })
         .collect();
 
     if sessions.is_empty() {
+        if args.json {
+            return export_json(
+                &args.period.map_or_else(|| "all".to_string(), |p| p.label()),
+                &[],
+                &Bucket::default().line("Total"),
+            );
+        }
+        if args.csv {
+            export_csv(&[], &Bucket::default().line("Total"));
+            return Ok(());
+        }
         match args.period {
-            None => println!("No completed sessions."),
-            Some(p) => println!("No completed sessions for {}.", p.label()),
+            None => println!("No sessions."),
+            Some(p) => println!("No sessions for {}.", p.label()),
         }
         return Ok(());
     }
 
+    let mut total = Bucket::default();
+    for session in &sessions {
+        add_session(&mut total, session, now);
+    }
+
+    let mut rows = Vec::new();
     match args.period {
-        // No period → all-time, broken down by year.
         None => {
-            println!("── All-time report (by year) ────────────────────────────────");
-            let mut totals = Bucket::default();
             let mut by_year: BTreeMap<i32, Bucket> = BTreeMap::new();
-            for s in &sessions {
-                add_session(by_year.entry(s.started_at.year()).or_default(), s);
-                add_session(&mut totals, s);
+            for session in &sessions {
+                add_session(
+                    by_year.entry(session.started_at.year()).or_default(),
+                    session,
+                    now,
+                );
             }
-            for (y, b) in &by_year {
-                print_bucket(&y.to_string(), b);
-            }
-            println!("{}", "─".repeat(61));
-            print_bucket("Total", &totals);
+            rows.extend(
+                by_year
+                    .iter()
+                    .map(|(year, bucket)| bucket.line(year.to_string())),
+            );
         }
-
-        // Year → that year broken down by month.
-        Some(Period::Year(y)) => {
-            println!("── {y} report (by month) ────────────────────────────────────");
-            let mut totals = Bucket::default();
+        Some(Period::Year(year)) => {
             let mut by_month: BTreeMap<u32, Bucket> = BTreeMap::new();
-            for s in &sessions {
-                add_session(by_month.entry(s.started_at.month()).or_default(), s);
-                add_session(&mut totals, s);
+            for session in &sessions {
+                add_session(
+                    by_month.entry(session.started_at.month()).or_default(),
+                    session,
+                    now,
+                );
             }
-            for (m, b) in &by_month {
-                print_bucket(&format!("{y}-{m:02}"), b);
-            }
-            println!("{}", "─".repeat(61));
-            print_bucket(&format!("{y} total"), &totals);
+            rows.extend(
+                by_month
+                    .iter()
+                    .map(|(month, bucket)| bucket.line(format!("{year}-{month:02}"))),
+            );
         }
-
-        // Month → that month broken down by ISO week.
-        Some(Period::Month(y, m)) => {
-            println!("── {y}-{m:02} report (by week) ──────────────────────────────────");
-            let mut totals = Bucket::default();
+        Some(Period::Month(_, _)) => {
             let mut by_week: BTreeMap<(i32, u32), Bucket> = BTreeMap::new();
-            for s in &sessions {
-                let iso: IsoWeek = s.started_at.iso_week();
-                add_session(by_week.entry((iso.year(), iso.week())).or_default(), s);
-                add_session(&mut totals, s);
+            for session in &sessions {
+                let iso: IsoWeek = session.started_at.iso_week();
+                add_session(
+                    by_week.entry((iso.year(), iso.week())).or_default(),
+                    session,
+                    now,
+                );
             }
-            for ((wy, wn), b) in &by_week {
-                print_bucket(&format!("{wy}-W{wn:02}"), b);
-            }
-            println!("{}", "─".repeat(61));
-            print_bucket(&format!("{y}-{m:02} total"), &totals);
+            rows.extend(
+                by_week.iter().map(|((week_year, week), bucket)| {
+                    bucket.line(format!("{week_year}-W{week:02}"))
+                }),
+            );
         }
+        Some(Period::Week(_, _)) => {
+            let mut by_day: BTreeMap<NaiveDate, Bucket> = BTreeMap::new();
+            for session in &sessions {
+                add_session(
+                    by_day.entry(session.started_at.date_naive()).or_default(),
+                    session,
+                    now,
+                );
+            }
+            rows.extend(
+                by_day
+                    .iter()
+                    .map(|(date, bucket)| bucket.line(date.to_string())),
+            );
+        }
+        Some(Period::Day(date)) => rows.push(total.line(date.to_string())),
+    }
 
-        // Day → list each session individually, with its pauses.
-        Some(Period::Day(d)) => {
-            println!("── {d} sessions ──────────────────────────────────────────");
-            let now = Local::now();
-            let mut totals = Bucket::default();
-            for s in &sessions {
-                println!("  {}", fmt_session_row(s, now));
-                for (i, p) in s.pauses.iter().enumerate() {
-                    println!("    {}", fmt_pause_row(i + 1, p, now));
-                }
-                add_session(&mut totals, s);
+    let total_period = match args.period {
+        None => "Total".to_string(),
+        Some(Period::Year(year)) => format!("{year} total"),
+        Some(Period::Month(year, month)) => format!("{year}-{month:02} total"),
+        Some(Period::Week(year, week)) => format!("{year}-W{week:02} total"),
+        Some(Period::Day(date)) => format!("{date} total"),
+    };
+    let total_line = total.line(total_period);
+    if args.json {
+        return export_json(
+            &args.period.map_or_else(|| "all".to_string(), |p| p.label()),
+            &rows,
+            &total_line,
+        );
+    }
+    if args.csv {
+        export_csv(&rows, &total_line);
+        return Ok(());
+    }
+
+    match args.period {
+        None => {
+            println!(
+                "{}",
+                paint(
+                    "── All-time report (by year) ────────────────────────────────",
+                    Style::Bold
+                )
+            );
+            for row in &rows {
+                print_line(row);
             }
             println!("{}", "─".repeat(61));
-            print_bucket(&format!("{d} total"), &totals);
+            print_line(&total_line);
+        }
+        Some(Period::Year(year)) => {
+            println!(
+                "{}",
+                paint(
+                    format!("── {year} report (by month) ────────────────────────────────────"),
+                    Style::Bold
+                )
+            );
+            for row in &rows {
+                print_line(row);
+            }
+            println!("{}", "─".repeat(61));
+            print_line(&total_line);
+        }
+        Some(Period::Month(year, month)) => {
+            println!(
+                "{}",
+                paint(
+                    format!(
+                        "── {year}-{month:02} report (by week) ──────────────────────────────────"
+                    ),
+                    Style::Bold
+                )
+            );
+            for row in &rows {
+                print_line(row);
+            }
+            println!("{}", "─".repeat(61));
+            print_line(&total_line);
+        }
+        Some(Period::Week(year, week)) => {
+            println!(
+                "{}",
+                paint(
+                    format!(
+                        "── {year}-W{week:02} report (by day) ───────────────────────────────────"
+                    ),
+                    Style::Bold
+                )
+            );
+            for row in &rows {
+                print_line(row);
+            }
+            println!("{}", "─".repeat(61));
+            print_line(&total_line);
+        }
+        Some(Period::Day(date)) => {
+            println!(
+                "{}",
+                paint(
+                    format!("── {date} sessions ──────────────────────────────────────────"),
+                    Style::Bold
+                )
+            );
+            for session in &sessions {
+                println!("  {}", fmt_session_row(session, now));
+                for (i, pause) in session.pauses.iter().enumerate() {
+                    println!("    {}", fmt_pause_row(i + 1, pause, now));
+                }
+            }
+            println!("{}", "─".repeat(61));
+            print_line(&total_line);
         }
     }
 
     println!();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{NaiveTime, TimeZone};
+
+    fn dt(day: u32, hour: u32) -> chrono::DateTime<Local> {
+        Local
+            .from_local_datetime(
+                &NaiveDate::from_ymd_opt(2026, 5, day)
+                    .unwrap()
+                    .and_time(NaiveTime::from_hms_opt(hour, 0, 0).unwrap()),
+            )
+            .single()
+            .unwrap()
+    }
+
+    #[test]
+    fn bucket_counts_unique_days_not_sessions() {
+        let session = |id, start, end| Session {
+            id,
+            started_at: dt(start, 9),
+            ended_at: Some(dt(start, end)),
+            pauses: vec![],
+            target_secs: 8 * 3600,
+        };
+        let now = dt(2, 17);
+        let mut bucket = Bucket::default();
+        add_session(&mut bucket, &session(1, 1, 12), now);
+        add_session(&mut bucket, &session(2, 1, 17), now);
+        add_session(
+            &mut bucket,
+            &Session {
+                id: 3,
+                started_at: dt(2, 9),
+                ended_at: None,
+                pauses: vec![],
+                target_secs: 8 * 3600,
+            },
+            now,
+        );
+        assert_eq!(bucket.dates.len(), 2);
+        assert_eq!(bucket.sessions, 3);
+        assert_eq!(bucket.ongoing_sessions, 1);
+    }
 }

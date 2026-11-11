@@ -7,7 +7,7 @@
 use crate::output::{Style, fmt_duration, fmt_label, fmt_time, kv, paint, print_session_summary};
 use crate::store::Store;
 use anyhow::Result;
-use chrono::Local;
+use chrono::{Duration, Local};
 use clap::Args;
 
 #[derive(Args)]
@@ -77,4 +77,29 @@ pub fn handle(_args: &Status) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn target_reached_at(
+    session: &crate::store::Session,
+    now: chrono::DateTime<Local>,
+) -> Option<chrono::DateTime<Local>> {
+    let mut remaining = session.target_secs;
+    let mut cursor = session.started_at;
+    let mut pauses: Vec<_> = session.pauses.iter().collect();
+    pauses.sort_by_key(|pause| pause.started_at);
+
+    for pause in pauses {
+        let worked_before_pause = (pause.started_at - cursor).num_seconds();
+        if remaining <= worked_before_pause {
+            return cursor.checked_add_signed(Duration::seconds(remaining));
+        }
+        remaining -= worked_before_pause;
+        cursor = pause.ended_at?;
+    }
+
+    if remaining <= (now - cursor).num_seconds() {
+        cursor.checked_add_signed(Duration::seconds(remaining))
+    } else {
+        None
+    }
 }
