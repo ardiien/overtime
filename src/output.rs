@@ -7,8 +7,44 @@
 //! Every user-facing formatter lives here so all commands print the same way.
 
 use crate::store::{Pause, Session};
+use anstyle::{AnsiColor, RgbColor, Style as AnsiStyle};
 use chrono::{DateTime, Local};
 use std::fmt::Display;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static COLOR_ENABLED: AtomicBool = AtomicBool::new(false);
+
+#[derive(Clone, Copy)]
+pub enum Style {
+    Error,
+    Good,
+    Bad,
+    Warning,
+    Dim,
+    Bold,
+}
+
+pub fn set_color_enabled(enabled: bool) {
+    COLOR_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+pub fn paint(text: impl Display, style: Style) -> String {
+    if !COLOR_ENABLED.load(Ordering::Relaxed) {
+        return text.to_string();
+    }
+
+    let style = match style {
+        Style::Error => AnsiStyle::new()
+            .fg_color(Some(AnsiColor::Red.into()))
+            .bold(),
+        Style::Good => AnsiStyle::new().fg_color(Some(AnsiColor::Green.into())),
+        Style::Bad => AnsiStyle::new().fg_color(Some(RgbColor(255, 165, 0).into())),
+        Style::Warning => AnsiStyle::new().fg_color(Some(AnsiColor::Yellow.into())),
+        Style::Dim => AnsiStyle::new().dimmed(),
+        Style::Bold => AnsiStyle::new().bold(),
+    };
+    format!("{style}{text}{style:#}")
+}
 
 /// `2026-05-27 09:00:00`
 pub fn fmt_dt(dt: DateTime<Local>) -> String {
@@ -29,7 +65,15 @@ pub fn fmt_duration(total_secs: i64) -> String {
 /// Always signed: `+00:30:00` / `-01:15:00`.
 pub fn fmt_signed(total_secs: i64) -> String {
     let sign = if total_secs < 0 { "-" } else { "+" };
-    format!("{sign}{}", fmt_duration(total_secs))
+    let value = format!("{sign}{}", fmt_duration(total_secs));
+    paint(
+        value,
+        if total_secs < 0 {
+            Style::Bad
+        } else {
+            Style::Good
+        },
+    )
 }
 
 /// Daily target without seconds: `08:00`.
@@ -39,15 +83,19 @@ pub fn fmt_target(total_secs: i64) -> String {
 
 /// Pause label: `[lunch]`, or `[no label]` when unset.
 pub fn fmt_label(label: Option<&str>) -> String {
-    match label {
-        Some(l) => format!("[{l}]"),
-        None => "[no label]".to_string(),
-    }
+    paint(
+        match label {
+            Some(l) => format!("[{l}]"),
+            None => "[no label]".to_string(),
+        },
+        Style::Dim,
+    )
 }
 
 /// One aligned `Key: value` line.
 pub fn kv(key: &str, value: impl Display) {
-    println!("{:<10}{}", format!("{key}:"), value);
+    let key = format!("{:<12}", format!("{key}:"));
+    println!("{}{}", paint(key, Style::Dim), value);
 }
 
 /// One-line session description shared by `report <DATE>` and `session delete`.
@@ -57,9 +105,15 @@ pub fn fmt_session_row(s: &Session, now: DateTime<Local>) -> String {
         .ended_at
         .map(fmt_time)
         .unwrap_or_else(|| "ongoing".to_string());
+    let ended = format!("{ended:<8}");
+    let ended = if s.ended_at.is_some() {
+        ended
+    } else {
+        paint(ended, Style::Warning)
+    };
     let worked = s.worked_secs_at(end);
     format!(
-        "{} → {:<8}   target {}   worked {}   pauses {}   overtime {}",
+        "{} → {}   target {}   worked {}   pauses {}   overtime {}",
         fmt_time(s.started_at),
         ended,
         fmt_target(s.target_secs),
@@ -72,7 +126,11 @@ pub fn fmt_session_row(s: &Session, now: DateTime<Local>) -> String {
 /// One-line pause description shared by `report <DATE>` and `pause delete`.
 /// `n` is the pause's 1-based number within its session.
 pub fn fmt_pause_row(n: usize, p: &Pause, now: DateTime<Local>) -> String {
-    let running = if p.is_active() { " (running)" } else { "" };
+    let running = if p.is_active() {
+        paint(" (running)", Style::Warning)
+    } else {
+        String::new()
+    };
     let duration = (p.ended_at.unwrap_or(now) - p.started_at).num_seconds();
     format!(
         "pause {n}  {}  {}{running}",

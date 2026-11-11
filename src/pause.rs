@@ -246,19 +246,23 @@ fn edit(
     if start.is_some() {
         println!(
             "Updated pause {id} start {} → {}",
-            fmt_dt(old_start),
-            fmt_dt(new_start)
+            crate::output::paint(fmt_dt(old_start), crate::output::Style::Dim),
+            crate::output::paint(fmt_dt(new_start), crate::output::Style::Bold)
         );
     }
     if let (Some(_), Some(e)) = (end, new_end) {
         let old = old_end.map(fmt_dt).unwrap_or_else(|| "(none)".to_string());
-        println!("Updated pause {id} end {old} → {}", fmt_dt(e));
+        println!(
+            "Updated pause {id} end {} → {}",
+            crate::output::paint(old, crate::output::Style::Dim),
+            crate::output::paint(fmt_dt(e), crate::output::Style::Bold)
+        );
     }
     if let Some(l) = &label {
         println!(
             "Updated pause {id} label {} → {}",
-            fmt_label(old_label.as_deref()),
-            fmt_label(Some(l))
+            crate::output::paint(fmt_label(old_label.as_deref()), crate::output::Style::Dim),
+            crate::output::paint(fmt_label(Some(l)), crate::output::Style::Bold)
         );
     }
     if let Some(d) = duration {
@@ -277,10 +281,16 @@ fn delete(date: NaiveDate, id: usize, yes: bool) -> Result<()> {
     check_pause_id(session, date, id)?;
 
     println!("Pause on {date} that will be deleted:");
-    println!("  {}", fmt_pause_row(id, &session.pauses[id - 1], Local::now()));
+    println!(
+        "  {}",
+        fmt_pause_row(id, &session.pauses[id - 1], Local::now())
+    );
 
     if !yes && !confirm("Delete this pause?")? {
-        println!("Aborted.");
+        println!(
+            "{}",
+            crate::output::paint("Aborted.", crate::output::Style::Warning)
+        );
         return Ok(());
     }
 

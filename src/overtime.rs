@@ -5,14 +5,26 @@
  */
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use std::io;
 
 /// Track your overtime hours from the command line.
 #[derive(Parser)]
 #[command(name = "zeit", version, about, long_about = None, arg_required_else_help(true))]
 struct Overtime {
+    /// Control colored output.
+    #[arg(long, global = true, value_enum, default_value_t = ColorOption::Auto)]
+    color: ColorOption,
     #[command(subcommand)]
     command: Commands,
+}
+
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+enum ColorOption {
+    #[default]
+    Auto,
+    Always,
+    Never,
 }
 
 #[derive(Subcommand)]
@@ -31,6 +43,14 @@ enum Commands {
 
 pub fn execute() -> Result<()> {
     let overtime = Overtime::parse();
+    let color = match overtime.color {
+        ColorOption::Auto => {
+            anstream::AutoStream::choice(&io::stdout()) != anstream::ColorChoice::Never
+        }
+        ColorOption::Always => true,
+        ColorOption::Never => false,
+    };
+    crate::output::set_color_enabled(color);
 
     match &overtime.command {
         Commands::Session(args) => crate::session::handle(args),

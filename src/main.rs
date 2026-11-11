@@ -20,7 +20,7 @@ fn main() -> ExitCode {
     match overtime::execute() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("error: {e:#}");
+            eprintln!("{}: {e:#}", output::paint("error", output::Style::Error));
             ExitCode::FAILURE
         }
     }
