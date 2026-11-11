@@ -47,6 +47,8 @@ zeit <COMMAND>
 | `pause`          | Start, end or edit pauses within a session    |
 | `status`         | Show the active session and pause             |
 | `report`         | Overtime report for a year, month, day or all |
+| `config`         | View or change preferences                    |
+| `completions`    | Generate shell completions                   |
 
 ### Conventions
 
@@ -57,11 +59,14 @@ Every command follows the same rules:
 * **Flags:** `--at` says *when* an action happens (`start`/`end`). `--start`/`--end` are the
   *new values* when editing. Each short flag means the same thing everywhere:
   `-a` at, `-s` start, `-e` end, `-l` label, `-t` target, `-y` yes.
-* **Input formats:** dates `YYYY-MM-DD`, times `HH:MM` or `HH:MM:SS`, daily targets `HH:MM`.
-  Report periods are `YYYY`, `YYYY-MM`, `YYYY-MM-DD` or `today`.
+* **Input formats:** dates `YYYY-MM-DD`, `today` or `yesterday`; times `HH:MM` or `HH:MM:SS`;
+  daily targets `HH:MM`.
+  `--at` also accepts an explicit local date and time, such as `2026-05-28T01:00`.
+  Report periods are `YYYY`, `YYYY-MM`, `YYYY-Www`, `YYYY-MM-DD`, `today` or `yesterday`.
 * **Output:** durations are `HH:MM:SS` (targets are `HH:MM`), overtime is always signed
   (`+00:12:09`, `-01:30:00`; negative means undertime), pause labels are `[label]`.
 * **Errors:** printed as `error: <problem> - <what to do>.`
+* **Colors:** enabled automatically in terminals; use `--color always` or `--color never` to override.
 
 ---
 
@@ -73,24 +78,18 @@ Every command follows the same rules:
 zeit session start
 ```
 
-Start at a specific past time today:
+Start at a specific past time:
 
 ```bash
 zeit session start --at 09:00
+zeit session start --at 2026-05-27T09:00
 ```
 
-Start with a different daily target (`HH:MM`, default `08:00`):
+Start with a different daily target (`HH:MM`; default is configurable and initially `08:00`):
 
 ```bash
 zeit session start --target 4:00
 zeit session start --at 09:00 --target 6:30
-```
-
-Start a session with a different daily target (`HH:MM`, default `8:00`):
-
-```bash
-zeit record start --target 4:00
-zeit record start --at 09:00 --target 6:30
 ```
 
 ## End a session
@@ -98,6 +97,7 @@ zeit record start --at 09:00 --target 6:30
 ```bash
 zeit session end
 zeit session end --at 17:30
+zeit session end --at 2026-05-28T01:00 # overnight session
 ```
 
 Example:
@@ -202,6 +202,9 @@ If a pause is running, one more line is shown, and its time is not counted as wo
 Pause:    [lunch] 00:12:41 (running)
 ```
 
+The status also shows a work-time progress bar and an estimated target time (or
+remaining work time while paused).
+
 ---
 
 # Reports
@@ -210,8 +213,12 @@ Pause:    [lunch] 00:12:41 (running)
 zeit report                 # all time, by year
 zeit report 2026            # one year, by month
 zeit report 2026-05         # one month, by week
+zeit report 2026-W21        # one ISO week, by day
 zeit report 2026-05-27      # one day, session by session
 zeit report today           # same as today's date
+zeit report yesterday       # previous local date
+zeit report 2026 --json     # JSON export
+zeit report 2026-05 --csv   # CSV export
 ```
 
 Reports aggregate:
@@ -219,9 +226,10 @@ Reports aggregate:
 * Worked time
 * Pause time
 * Overtime (worked time minus each session's daily target)
-* Day totals
+* Unique work dates and session totals
 
-The daily report (`--month M --day D`) also shows each session's target.
+Reports include active sessions, marked as ongoing. JSON and CSV exports include
+the grouped rows and a total row.
 
 The one-day report also shows each session's target and numbers its pauses:
 
@@ -235,16 +243,37 @@ The one-day report also shows each session's target and numbers its pauses:
 
 ---
 
+# Preferences and shell completions
+
+Set or inspect the default daily target used by `session start`:
+
+```bash
+zeit config target
+zeit config target 07:30
+zeit config reset-target
+```
+
+Generate shell completion scripts to source from your shell configuration:
+
+```bash
+zeit completions bash
+zeit completions zsh
+zeit completions fish
+```
+
 # Storage
 
-All data lives in `~/Library/zeit/data.json` on macOS and in
+Work sessions live in `~/Library/zeit/data.json` on macOS and in
 `$XDG_CONFIG_HOME/zeit/data.json` (default `~/.config/zeit/data.json`) on Linux,
-as human-readable JSON. No external services, no databases.
+as human-readable JSON. Preferences are stored beside the data file in `config.json`. 
+Writes replace the JSON file atomically. No external services, no databases. 
+Supported operating systems are Linux and macOS.
 
 # Overtime definition
 
-Every completed session is treated as one working day. The daily target
-defaults to 8 hours and can be changed per session with `--target HH:MM`
+Each distinct date with one or more sessions counts as one working day. The daily target
+defaults to 8 hours, can be changed globally with `zeit config target HH:MM`, and can be
+overridden per session with `--target HH:MM`
 on `session start` or later with `session edit <date> --target HH:MM`.
 Overtime = worked time - that session's target. Sessions recorded before
 per-session targets existed keep the 8-hour default.
