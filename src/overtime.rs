@@ -4,10 +4,10 @@
  * See http://www.apache.org/licenses/LICENSE-2.0
  */
 
+use crate::util::TOOL_NAME;
 use anyhow::Result;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use std::io;
-use crate::util::TOOL_NAME;
 
 /// Track your overtime hours from the command line.
 #[derive(Parser)]
