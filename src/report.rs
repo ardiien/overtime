@@ -4,7 +4,10 @@
  * See http://www.apache.org/licenses/LICENSE-2.0
  */
 
-use crate::output::{Style, fmt_duration, fmt_pause_row, fmt_session_row, fmt_signed, paint};
+use crate::output::{
+    Style, fmt_duration, fmt_pause_label_width, fmt_pause_row_aligned, fmt_session_row,
+    fmt_signed_aligned, paint,
+};
 use crate::store::{Session, Store};
 use crate::util::{Period, parse_period};
 use anyhow::Result;
@@ -78,6 +81,41 @@ struct JsonReport<'a> {
     total: &'a ReportLine,
 }
 
+struct ReportLineWidths {
+    period: usize,
+    days: usize,
+    worked: usize,
+    pause_count: usize,
+    pause_seconds: usize,
+    overtime: usize,
+}
+
+impl ReportLineWidths {
+    fn for_lines<'a>(lines: impl Iterator<Item = &'a ReportLine>) -> Self {
+        let mut widths = Self {
+            period: 18,
+            days: 3,
+            worked: 8,
+            pause_count: 1,
+            pause_seconds: 8,
+            overtime: 9,
+        };
+        for line in lines {
+            widths.period = widths.period.max(line.period.chars().count());
+            widths.days = widths.days.max(line.days.to_string().len());
+            widths.worked = widths.worked.max(fmt_duration(line.worked_seconds).len());
+            widths.pause_count = widths.pause_count.max(line.pause_count.to_string().len());
+            widths.pause_seconds = widths
+                .pause_seconds
+                .max(fmt_duration(line.pause_seconds).len());
+            widths.overtime = widths
+                .overtime
+                .max(fmt_duration(line.overtime_seconds).len() + 1);
+        }
+        widths
+    }
+}
+
 fn add_session(bucket: &mut Bucket, session: &Session, now: chrono::DateTime<Local>) {
     let end = session.ended_at.unwrap_or(now);
     bucket.dates.insert(session.started_at.date_naive());
@@ -91,9 +129,9 @@ fn add_session(bucket: &mut Bucket, session: &Session, now: chrono::DateTime<Loc
     bucket.target_secs += session.target_secs;
 }
 
-fn format_line(line: &ReportLine) -> String {
+fn format_line(line: &ReportLine, widths: &ReportLineWidths) -> String {
     let is_total = line.period == "Total" || line.period.ends_with(" total");
-    let padded_label = format!("{:<18}", line.period);
+    let padded_label = format!("{:<width$}", line.period, width = widths.period);
     let label = if is_total {
         paint(padded_label, Style::Bold)
     } else {
@@ -108,19 +146,21 @@ fn format_line(line: &ReportLine) -> String {
         String::new()
     };
     format!(
-        "  {} {:>3} day(s)   worked {}   pauses {} ({})   overtime {}{}",
-        label,
-        line.days,
-        fmt_duration(line.worked_seconds),
-        line.pause_count,
-        fmt_duration(line.pause_seconds),
-        fmt_signed(line.overtime_seconds),
-        ongoing
+        "  {label} {days:>days_width$} day(s)   worked {worked:>worked_width$}   pauses {pause_count:>pause_count_width$} ({pause_seconds:>pause_seconds_width$})   overtime {overtime}{ongoing}",
+        days = line.days,
+        days_width = widths.days,
+        worked = fmt_duration(line.worked_seconds),
+        worked_width = widths.worked,
+        pause_count = line.pause_count,
+        pause_count_width = widths.pause_count,
+        pause_seconds = fmt_duration(line.pause_seconds),
+        pause_seconds_width = widths.pause_seconds,
+        overtime = fmt_signed_aligned(line.overtime_seconds, widths.overtime),
     )
 }
 
-fn print_line(line: &ReportLine) {
-    println!("{}", format_line(line));
+fn print_line(line: &ReportLine, widths: &ReportLineWidths) {
+    println!("{}", format_line(line, widths));
 }
 
 fn export_json(period: &str, rows: &[ReportLine], total: &ReportLine) -> Result<()> {
@@ -283,6 +323,7 @@ pub fn handle(args: &Report) -> Result<()> {
         export_csv(&rows, &total_line);
         return Ok(());
     }
+    let widths = ReportLineWidths::for_lines(rows.iter().chain(std::iter::once(&total_line)));
 
     match args.period {
         None => {
@@ -294,10 +335,10 @@ pub fn handle(args: &Report) -> Result<()> {
                 )
             );
             for row in &rows {
-                print_line(row);
+                print_line(row, &widths);
             }
             println!("{}", "─".repeat(61));
-            print_line(&total_line);
+            print_line(&total_line, &widths);
         }
         Some(Period::Year(year)) => {
             println!(
@@ -308,10 +349,10 @@ pub fn handle(args: &Report) -> Result<()> {
                 )
             );
             for row in &rows {
-                print_line(row);
+                print_line(row, &widths);
             }
             println!("{}", "─".repeat(61));
-            print_line(&total_line);
+            print_line(&total_line, &widths);
         }
         Some(Period::Month(year, month)) => {
             println!(
@@ -324,10 +365,10 @@ pub fn handle(args: &Report) -> Result<()> {
                 )
             );
             for row in &rows {
-                print_line(row);
+                print_line(row, &widths);
             }
             println!("{}", "─".repeat(61));
-            print_line(&total_line);
+            print_line(&total_line, &widths);
         }
         Some(Period::Week(year, week)) => {
             println!(
@@ -340,10 +381,10 @@ pub fn handle(args: &Report) -> Result<()> {
                 )
             );
             for row in &rows {
-                print_line(row);
+                print_line(row, &widths);
             }
             println!("{}", "─".repeat(61));
-            print_line(&total_line);
+            print_line(&total_line, &widths);
         }
         Some(Period::Day(date)) => {
             println!(
@@ -353,14 +394,23 @@ pub fn handle(args: &Report) -> Result<()> {
                     Style::Bold
                 )
             );
+            let pause_label_width = sessions
+                .iter()
+                .flat_map(|session| session.pauses.iter())
+                .map(fmt_pause_label_width)
+                .max()
+                .unwrap_or_default();
             for session in &sessions {
                 println!("  {}", fmt_session_row(session, now));
                 for (i, pause) in session.pauses.iter().enumerate() {
-                    println!("    {}", fmt_pause_row(i + 1, pause, now));
+                    println!(
+                        "    {}",
+                        fmt_pause_row_aligned(i + 1, pause, now, pause_label_width)
+                    );
                 }
             }
             println!("{}", "─".repeat(61));
-            print_line(&total_line);
+            print_line(&total_line, &widths);
         }
     }
 
@@ -444,7 +494,50 @@ mod tests {
         let mut bucket = Bucket::default();
         bucket.ongoing_sessions = 1;
 
-        assert!(!format_line(&bucket.line("2026-11-12 total")).contains("ongoing"));
-        assert!(format_line(&bucket.line("2026-11-12")).contains("ongoing 1"));
+        let total = bucket.line("2026-11-12 total");
+        let row = bucket.line("2026-11-12");
+        let widths = ReportLineWidths::for_lines([&total, &row].into_iter());
+
+        assert!(!format_line(&total, &widths).contains("ongoing"));
+        assert!(format_line(&row, &widths).contains("ongoing 1"));
+    }
+
+    #[test]
+    fn report_columns_align_when_totals_have_more_digits() {
+        let row = ReportLine {
+            period: "2026-W40".to_string(),
+            days: 2,
+            sessions: 2,
+            ongoing_sessions: 0,
+            pause_count: 1,
+            worked_seconds: 16 * 3600 + 4 * 60 + 41,
+            pause_seconds: 36 * 60 + 57,
+            target_seconds: 16 * 3600,
+            overtime_seconds: 4 * 3600 + 41 * 60,
+        };
+        let total = ReportLine {
+            period: "2026-10 total".to_string(),
+            days: 22,
+            sessions: 22,
+            ongoing_sessions: 0,
+            pause_count: 20,
+            worked_seconds: 177 * 3600 + 39 * 60 + 50,
+            pause_seconds: 16 * 3600 + 2 * 60 + 55,
+            target_seconds: 176 * 3600,
+            overtime_seconds: 1 * 3600 + 39 * 60 + 50,
+        };
+        let widths = ReportLineWidths::for_lines([&row, &total].into_iter());
+        let row = format_line(&row, &widths);
+        let total = format_line(&total, &widths);
+
+        for column in ["day(s)", "worked", "pauses", "overtime"] {
+            assert_eq!(row.find(column), total.find(column), "{column} column");
+        }
+
+        let pause_duration_column = |line: &str| {
+            let pauses = line.find("   pauses ").unwrap();
+            pauses + line[pauses..].find('(').unwrap()
+        };
+        assert_eq!(pause_duration_column(&row), pause_duration_column(&total));
     }
 }

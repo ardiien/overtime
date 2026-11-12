@@ -64,8 +64,12 @@ pub fn fmt_duration(total_secs: i64) -> String {
 
 /// Always signed: `+00:30:00` / `-01:15:00`.
 pub fn fmt_signed(total_secs: i64) -> String {
+    fmt_signed_aligned(total_secs, 0)
+}
+
+pub(crate) fn fmt_signed_aligned(total_secs: i64, width: usize) -> String {
     let sign = if total_secs < 0 { "-" } else { "+" };
-    let value = format!("{sign}{}", fmt_duration(total_secs));
+    let value = format!("{:>width$}", format!("{sign}{}", fmt_duration(total_secs)));
     paint(
         value,
         if total_secs < 0 {
@@ -81,15 +85,16 @@ pub fn fmt_target(total_secs: i64) -> String {
     format!("{:02}:{:02}", total_secs / 3600, (total_secs % 3600) / 60)
 }
 
-/// Pause label: `[lunch]`, or `[no label]` when unset.
+/// Pause label: `[lunch]`, or `[unlabeled]` when unset.
 pub fn fmt_label(label: Option<&str>) -> String {
-    paint(
-        match label {
-            Some(l) => format!("[{l}]"),
-            None => "[no label]".to_string(),
-        },
-        Style::Dim,
-    )
+    paint(pause_label_text(label), Style::Dim)
+}
+
+fn pause_label_text(label: Option<&str>) -> String {
+    match label {
+        Some(label) => format!("[{label}]"),
+        None => "[unlabeled]".to_string(),
+    }
 }
 
 /// One aligned `Key: value` line.
@@ -141,6 +146,19 @@ pub fn fmt_session_row(s: &Session, now: DateTime<Local>) -> String {
 /// One-line pause description shared by `report <DATE>` and `pause delete`.
 /// `n` is the pause's 1-based number within its session.
 pub fn fmt_pause_row(n: usize, p: &Pause, now: DateTime<Local>) -> String {
+    fmt_pause_row_aligned(n, p, now, fmt_pause_label_width(p))
+}
+
+pub(crate) fn fmt_pause_label_width(p: &Pause) -> usize {
+    pause_label_text(p.label.as_deref()).chars().count()
+}
+
+pub(crate) fn fmt_pause_row_aligned(
+    n: usize,
+    p: &Pause,
+    now: DateTime<Local>,
+    label_width: usize,
+) -> String {
     let running = if p.is_active() {
         paint("ongoing", Style::Warning)
     } else {
@@ -148,9 +166,10 @@ pub fn fmt_pause_row(n: usize, p: &Pause, now: DateTime<Local>) -> String {
     };
     let duration = (p.ended_at.unwrap_or(now) - p.started_at).num_seconds();
     let ended = p.ended_at.map(fmt_time).unwrap_or_else(|| running);
+    let label = format!("{:<label_width$}", pause_label_text(p.label.as_deref()));
     format!(
         "pause {n}  {}  {} → {} | {}",
-        fmt_label(p.label.as_deref()),
+        paint(label, Style::Dim),
         fmt_time(p.started_at),
         ended,
         fmt_duration(duration)
@@ -239,8 +258,36 @@ mod tests {
 
         assert_eq!(
             fmt_pause_row(1, &pause, dt(12, 5)),
-            "pause 1  [no label]  12:00:00 → ongoing | 00:05:00"
+            "pause 1  [unlabeled]  12:00:00 → ongoing | 00:05:00"
         );
+    }
+
+    #[test]
+    fn pause_rows_align_times_after_variable_width_labels() {
+        set_color_enabled(false);
+        let lunch = Pause {
+            started_at: dt(11, 41),
+            ended_at: Some(dt(12, 14)),
+            label: Some("lunch".to_string()),
+        };
+        let errand = Pause {
+            started_at: dt(12, 43),
+            ended_at: Some(dt(15, 12)),
+            label: Some("errand".to_string()),
+        };
+        let label_width = fmt_pause_label_width(&lunch).max(fmt_pause_label_width(&errand));
+        let lunch_row = fmt_pause_row_aligned(1, &lunch, dt(17, 0), label_width);
+        let errand_row = fmt_pause_row_aligned(2, &errand, dt(17, 0), label_width);
+
+        assert_eq!(
+            lunch_row,
+            "pause 1  [lunch]   11:41:00 → 12:14:00 | 00:33:00"
+        );
+        assert_eq!(
+            errand_row,
+            "pause 2  [errand]  12:43:00 → 15:12:00 | 02:29:00"
+        );
+        assert_eq!(lunch_row.find("11:41:00"), errand_row.find("12:43:00"));
     }
 
     #[test]
