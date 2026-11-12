@@ -32,6 +32,7 @@ struct Bucket {
     dates: BTreeSet<NaiveDate>,
     sessions: u32,
     ongoing_sessions: u32,
+    pause_count: u32,
     worked_secs: i64,
     pause_secs: i64,
     target_secs: i64,
@@ -48,6 +49,7 @@ impl Bucket {
             days: self.dates.len() as u32,
             sessions: self.sessions,
             ongoing_sessions: self.ongoing_sessions,
+            pause_count: self.pause_count,
             worked_seconds: self.worked_secs,
             pause_seconds: self.pause_secs,
             target_seconds: self.target_secs,
@@ -62,6 +64,7 @@ struct ReportLine {
     days: u32,
     sessions: u32,
     ongoing_sessions: u32,
+    pause_count: u32,
     worked_seconds: i64,
     pause_seconds: i64,
     target_seconds: i64,
@@ -80,6 +83,7 @@ fn add_session(bucket: &mut Bucket, session: &Session, now: chrono::DateTime<Loc
     bucket.dates.insert(session.started_at.date_naive());
     bucket.sessions += 1;
     bucket.ongoing_sessions += u32::from(session.is_active());
+    bucket.pause_count += session.pauses.len() as u32;
     bucket.worked_secs += session
         .worked_secs()
         .unwrap_or_else(|| session.worked_secs_at(end));
@@ -87,14 +91,15 @@ fn add_session(bucket: &mut Bucket, session: &Session, now: chrono::DateTime<Loc
     bucket.target_secs += session.target_secs;
 }
 
-fn print_line(line: &ReportLine) {
+fn format_line(line: &ReportLine) -> String {
+    let is_total = line.period == "Total" || line.period.ends_with(" total");
     let padded_label = format!("{:<18}", line.period);
-    let label = if line.period == "Total" || line.period.ends_with(" total") {
+    let label = if is_total {
         paint(padded_label, Style::Bold)
     } else {
         padded_label
     };
-    let ongoing = if line.ongoing_sessions > 0 {
+    let ongoing = if !is_total && line.ongoing_sessions > 0 {
         paint(
             format!("   ongoing {}", line.ongoing_sessions),
             Style::Warning,
@@ -102,15 +107,20 @@ fn print_line(line: &ReportLine) {
     } else {
         String::new()
     };
-    println!(
-        "  {} {:>3} day(s)   worked {}   pauses {}   overtime {}{}",
+    format!(
+        "  {} {:>3} day(s)   worked {}   pauses {} ({})   overtime {}{}",
         label,
         line.days,
         fmt_duration(line.worked_seconds),
+        line.pause_count,
         fmt_duration(line.pause_seconds),
         fmt_signed(line.overtime_seconds),
         ongoing
-    );
+    )
+}
+
+fn print_line(line: &ReportLine) {
+    println!("{}", format_line(line));
 }
 
 fn export_json(period: &str, rows: &[ReportLine], total: &ReportLine) -> Result<()> {
@@ -127,15 +137,16 @@ fn export_json(period: &str, rows: &[ReportLine], total: &ReportLine) -> Result<
 
 fn export_csv(rows: &[ReportLine], total: &ReportLine) {
     println!(
-        "period,days,sessions,ongoing_sessions,worked_seconds,pause_seconds,target_seconds,overtime_seconds"
+        "period,days,sessions,ongoing_sessions,pause_count,worked_seconds,pause_seconds,target_seconds,overtime_seconds"
     );
     for row in rows.iter().chain(std::iter::once(total)) {
         println!(
-            "{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{}",
             row.period,
             row.days,
             row.sessions,
             row.ongoing_sessions,
+            row.pause_count,
             row.worked_seconds,
             row.pause_seconds,
             row.target_seconds,
@@ -400,5 +411,40 @@ mod tests {
         assert_eq!(bucket.dates.len(), 2);
         assert_eq!(bucket.sessions, 3);
         assert_eq!(bucket.ongoing_sessions, 1);
+    }
+
+    #[test]
+    fn bucket_counts_pauses_across_sessions() {
+        let session = |id, pauses| Session {
+            id,
+            started_at: dt(1, 9),
+            ended_at: Some(dt(1, 17)),
+            pauses,
+            target_secs: 8 * 3600,
+        };
+        let pause = |start, end| crate::store::Pause {
+            started_at: dt(1, start),
+            ended_at: Some(dt(1, end)),
+            label: None,
+        };
+        let now = dt(2, 17);
+        let mut bucket = Bucket::default();
+        add_session(
+            &mut bucket,
+            &session(1, vec![pause(11, 12), pause(13, 14)]),
+            now,
+        );
+        add_session(&mut bucket, &session(2, vec![pause(12, 13)]), now);
+
+        assert_eq!(bucket.line("2026").pause_count, 3);
+    }
+
+    #[test]
+    fn total_line_omits_ongoing_count() {
+        let mut bucket = Bucket::default();
+        bucket.ongoing_sessions = 1;
+
+        assert!(!format_line(&bucket.line("2026-11-12 total")).contains("ongoing"));
+        assert!(format_line(&bucket.line("2026-11-12")).contains("ongoing 1"));
     }
 }

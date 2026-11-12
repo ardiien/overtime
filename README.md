@@ -185,25 +185,26 @@ zeit pause delete 2026-05-27 1 --yes
 zeit status
 ```
 
-Example:
+Example with a running pause:
 
 ```text
-Started:  2026-05-27 09:01:03
-Elapsed:  05:42:10
-Pauses:   00:30:00
-Worked:   05:12:10
-Target:   08:00
-Overtime: -02:47:50
+Session 2026-05-27
+  Started     09:01:03
+  Elapsed     05:42:10
+
+Work
+  Worked      05:12:10
+  Pauses      00:30:00
+  Pause       00:12:41 [lunch] (ongoing)
+  End ETA     17:31:03
+
+Target 08:00
+  Progress    [#############-------] 65%
+  Overtime    -02:47:50
 ```
 
-If a pause is running, one more line is shown, and its time is not counted as worked:
-
-```text
-Pause:    [lunch] 00:12:41 (running)
-```
-
-The status also shows a work-time progress bar and an estimated target time (or
-remaining work time while paused).
+The running pause is not counted as worked, and its elapsed time shifts the
+expected work end time.
 
 ---
 
@@ -224,7 +225,7 @@ zeit report 2026-05 --csv   # CSV export
 Reports aggregate:
 
 * Worked time
-* Pause time
+* Pause count and time
 * Overtime (worked time minus each session's daily target)
 * Unique work dates and session totals
 
@@ -236,9 +237,9 @@ The one-day report also shows each session's target and numbers its pauses:
 ```text
 ── 2026-05-27 sessions ──────────────────────────────────────────
   09:00:00 → 17:30:00   target 08:00   worked 08:00:00   pauses 00:30:00   overtime +00:00:00
-    pause 1  [lunch]  00:30:00
+    pause 1  [lunch]  12:00:00 → 12:30:00 | 00:30:00
 ─────────────────────────────────────────────────────────────
-  2026-05-27 total     1 day(s)   worked 08:00:00   pauses 00:30:00   overtime +00:00:00
+  2026-05-27 total     1 day(s)   worked 08:00:00   pauses 1 (00:30:00)   overtime +00:00:00
 ```
 
 ---

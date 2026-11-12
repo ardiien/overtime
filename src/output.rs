@@ -94,8 +94,23 @@ pub fn fmt_label(label: Option<&str>) -> String {
 
 /// One aligned `Key: value` line.
 pub fn kv(key: &str, value: impl Display) {
-    let key = format!("{:<12}", format!("{key}:"));
-    println!("{}{}", paint(key, Style::Dim), value);
+    print_kv(key, value, "", ":");
+}
+
+/// One aligned, indented key/value line without punctuation after the key.
+pub fn kv_indented_no_colon(key: &str, value: impl Display) {
+    print_kv(key, value, "  ", "");
+}
+
+fn print_kv(key: &str, value: impl Display, key_prefix: &str, key_suffix: &str) {
+    println!("{}", format_kv(key, value, key_prefix, key_suffix));
+}
+
+fn format_kv(key: &str, value: impl Display, key_prefix: &str, key_suffix: &str) -> String {
+    let key = format!("{key}{key_suffix}");
+    let width = 12.max(key.len() + 1);
+    let key = format!("{key:<width$}");
+    format!("{key_prefix}{}{}", paint(key, Style::Dim), value)
 }
 
 /// One-line session description shared by `report <DATE>` and `session delete`.
@@ -127,32 +142,114 @@ pub fn fmt_session_row(s: &Session, now: DateTime<Local>) -> String {
 /// `n` is the pause's 1-based number within its session.
 pub fn fmt_pause_row(n: usize, p: &Pause, now: DateTime<Local>) -> String {
     let running = if p.is_active() {
-        paint(" (running)", Style::Warning)
+        paint("ongoing", Style::Warning)
     } else {
         String::new()
     };
     let duration = (p.ended_at.unwrap_or(now) - p.started_at).num_seconds();
+    let ended = p.ended_at.map(fmt_time).unwrap_or_else(|| running);
     format!(
-        "pause {n}  {}  {}{running}",
+        "pause {n}  {}  {} → {} | {}",
         fmt_label(p.label.as_deref()),
+        fmt_time(p.started_at),
+        ended,
         fmt_duration(duration)
     )
 }
 
-/// The `Key: value` block shown by `status`, `session end` and `session edit`.
+/// The key/value block shown by `session end` and `session edit`.
 /// `show_ended` lets `session end` skip the Ended line its first line already printed.
-pub fn print_session_summary(s: &Session, now: DateTime<Local>, show_ended: bool) {
+/// `key_prefix` indents each item; `key_suffix` is appended to each item name.
+pub fn print_session_summary(
+    s: &Session,
+    now: DateTime<Local>,
+    show_ended: bool,
+    key_prefix: &str,
+    key_suffix: &str,
+) {
     let end = s.ended_at.unwrap_or(now);
     let worked = s.worked_secs_at(end);
 
-    kv("Started", fmt_dt(s.started_at));
+    print_kv("Started", fmt_dt(s.started_at), key_prefix, key_suffix);
     match s.ended_at {
-        Some(e) if show_ended => kv("Ended", fmt_dt(e)),
+        Some(e) if show_ended => print_kv("Ended", fmt_dt(e), key_prefix, key_suffix),
         Some(_) => {}
-        None => kv("Elapsed", fmt_duration((now - s.started_at).num_seconds())),
+        None => print_kv(
+            "Elapsed",
+            fmt_duration((now - s.started_at).num_seconds()),
+            key_prefix,
+            key_suffix,
+        ),
     }
-    kv("Pauses", fmt_duration(s.pause_secs_at(end)));
-    kv("Worked", fmt_duration(worked));
-    kv("Target", fmt_target(s.target_secs));
-    kv("Overtime", fmt_signed(worked - s.target_secs));
+    print_kv(
+        "Pauses",
+        fmt_duration(s.pause_secs_at(end)),
+        key_prefix,
+        key_suffix,
+    );
+    print_kv("Worked", fmt_duration(worked), key_prefix, key_suffix);
+    print_kv("Target", fmt_target(s.target_secs), key_prefix, key_suffix);
+    print_kv(
+        "Overtime",
+        fmt_signed(worked - s.target_secs),
+        key_prefix,
+        key_suffix,
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{NaiveDate, NaiveTime, TimeZone};
+
+    fn dt(hour: u32, minute: u32) -> DateTime<Local> {
+        Local
+            .from_local_datetime(
+                &NaiveDate::from_ymd_opt(2026, 5, 27)
+                    .unwrap()
+                    .and_time(NaiveTime::from_hms_opt(hour, minute, 0).unwrap()),
+            )
+            .single()
+            .unwrap()
+    }
+
+    #[test]
+    fn pause_row_shows_start_and_end_times() {
+        set_color_enabled(false);
+        let pause = Pause {
+            started_at: dt(12, 0),
+            ended_at: Some(dt(12, 30)),
+            label: Some("lunch".to_string()),
+        };
+
+        assert_eq!(
+            fmt_pause_row(1, &pause, dt(13, 0)),
+            "pause 1  [lunch]  12:00:00 → 12:30:00 | 00:30:00"
+        );
+    }
+
+    #[test]
+    fn active_pause_row_shows_ongoing_end_time() {
+        set_color_enabled(false);
+        let pause = Pause {
+            started_at: dt(12, 0),
+            ended_at: None,
+            label: None,
+        };
+
+        assert_eq!(
+            fmt_pause_row(1, &pause, dt(12, 5)),
+            "pause 1  [no label]  12:00:00 → ongoing | 00:05:00"
+        );
+    }
+
+    #[test]
+    fn key_value_line_can_omit_colon() {
+        set_color_enabled(false);
+        assert_eq!(format_kv("Progress", "42%", "  ", ""), "  Progress    42%");
+        assert_eq!(
+            format_kv("End ETA", "17:31:03", "  ", ""),
+            "  End ETA     17:31:03"
+        );
+    }
 }

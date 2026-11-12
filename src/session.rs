@@ -142,7 +142,7 @@ fn end(at: Option<At>) -> Result<()> {
     store.save()?;
 
     println!("Ended session at {}", fmt_dt(ended_at));
-    print_session_summary(&finished, now, false);
+    print_session_summary(&finished, now, false, "", ":");
     Ok(())
 }
 
@@ -231,7 +231,7 @@ fn edit(date: NaiveDate, start: Option<At>, end: Option<At>, target: Option<i64>
             crate::output::paint(fmt_target(new_target), crate::output::Style::Bold)
         );
     }
-    print_session_summary(&updated, now, true);
+    print_session_summary(&updated, now, true, "", ":");
     Ok(())
 }
 
